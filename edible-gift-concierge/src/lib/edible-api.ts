@@ -3,7 +3,7 @@ import { Product, SearchResult } from './types';
 const EDIBLE_BASE_URL = 'https://www.ediblearrangements.com';
 
 function normalizeProduct(raw: SearchResult): Product {
-    const price = raw.minPrice ?? raw.maxPrice ?? 0;
+
 
     // Build full product URL from the relative slug
     const productUrl = raw.url
@@ -13,8 +13,14 @@ function normalizeProduct(raw: SearchResult): Product {
     // Use full-size image, fallback to thumbnail 
     const imageUrl = raw.image || raw.thumbnail || '';
 
+    // Ensure ID is a string to prevent selection bugs
+    const id = String(raw.id || raw.number || Math.random());
+
+    // Robust price extraction
+    const price = raw.minPrice || raw.maxPrice || raw.price || 0;
+
     return {
-        id: raw.id || raw.number || String(Math.random()),
+        id,
         name: raw.name || 'Edible Arrangement',
         price: Math.round(price * 100) / 100,
         priceFormatted: `$${price.toFixed(2)}`,
@@ -24,15 +30,18 @@ function normalizeProduct(raw: SearchResult): Product {
         description: raw.description || '',
         category: raw.category || undefined,
         occasion: raw.occasion || undefined,
+        isOneHourDelivery: raw.isOneHourDelivery || false,
+        promo: raw.promo || undefined,
+        productImageTag: raw.productImageTag || undefined,
     };
 }
 
-export async function searchProducts(keyword: string): Promise<Product[]> {
+export async function searchProducts(keyword: string, zipCode?: string): Promise<Product[]> {
     try {
         const response = await fetch('/api/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ keyword }),
+            body: JSON.stringify({ keyword, zipCode }),
         });
 
         if (!response.ok) {
@@ -60,7 +69,7 @@ export async function searchProducts(keyword: string): Promise<Product[]> {
  * Server-side version that calls the Edible API directly
  * Used in API route handlers where the proxy isn't needed
  */
-export async function searchProductsServer(keyword: string): Promise<Product[]> {
+export async function searchProductsServer(keyword: string, zipCode?: string): Promise<Product[]> {
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -72,7 +81,7 @@ export async function searchProductsServer(keyword: string): Promise<Product[]> 
                 'Accept': 'application/json',
                 'User-Agent': 'EdibleGiftConcierge/1.0',
             },
-            body: JSON.stringify({ keyword }),
+            body: JSON.stringify({ keyword, zipCode }),
             signal: controller.signal,
         });
 

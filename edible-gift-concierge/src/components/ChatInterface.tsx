@@ -4,19 +4,14 @@ import { useChat } from '@ai-sdk/react';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { UIMessage } from 'ai';
 import { DefaultChatTransport } from 'ai';
+import { Product } from '@/lib/types'; // Import shared type
 import MessageBubble from './MessageBubble';
 import ProductCard from './ProductCard';
 import QuickReplies from './QuickReplies';
 import TypingIndicator from './TypingIndicator';
 import WelcomeScreen from './WelcomeScreen';
-
-interface ProductData {
-    name: string;
-    price: string;
-    description: string;
-    url: string;
-    imageUrl: string;
-}
+import ComparisonBar from './ComparisonBar';
+import { ComparisonModal } from './ComparisonModal';
 
 /**
  * Parse quick replies from the end of AI messages.
@@ -52,10 +47,10 @@ function getMessageText(message: UIMessage): string {
  * Extract product data from tool result parts in a message.
  * In AI SDK v6, tool parts have state/output directly on the part object.
  */
-function extractProducts(message: UIMessage): ProductData[] {
+function extractProducts(message: UIMessage): Product[] {
     if (!message.parts) return [];
 
-    const products: ProductData[] = [];
+    const products: Product[] = [];
     for (const part of message.parts) {
         // In v6, tool parts have type starting with 'tool-' and contain state + output
         if (part.type.startsWith('tool-')) {
@@ -65,7 +60,7 @@ function extractProducts(message: UIMessage): ProductData[] {
                 (toolPart.state === 'output-available' || toolPart.state === 'done') &&
                 toolPart.output?.products
             ) {
-                products.push(...(toolPart.output.products as ProductData[]));
+                products.push(...(toolPart.output.products as Product[]));
             }
         }
     }
@@ -77,6 +72,10 @@ export default function ChatInterface() {
     const inputRef = useRef<HTMLInputElement>(null);
     const [input, setInput] = useState('');
     const [currentQuickReplies, setCurrentQuickReplies] = useState<string[]>([]);
+
+    // Comparison State
+    const [selectedProducts, setSelectedProducts] = useState<Product[]>([]);
+    const [isComparisonOpen, setIsComparisonOpen] = useState(false);
 
     const { messages, sendMessage, status, error } = useChat({
         transport: new DefaultChatTransport({ api: '/api/chat' }),
@@ -146,12 +145,24 @@ export default function ChatInterface() {
         []
     );
 
+    const toggleProductSelection = (product: Product) => {
+        if (selectedProducts.find((p) => p.id === product.id)) {
+            setSelectedProducts((prev) => prev.filter((p) => p.id !== product.id));
+        } else {
+            if (selectedProducts.length >= 3) {
+                // Ideally show toast, but silent limit for now to match simplicity requirement
+                return;
+            }
+            setSelectedProducts((prev) => [...prev, product]);
+        }
+    };
+
     const hasMessages = messages.length > 0;
 
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full relative">
             {/* Messages area */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
+            <div className="flex-1 overflow-y-auto custom-scrollbar pb-20">
                 <div className="max-w-3xl mx-auto px-4 py-4">
                     {!hasMessages ? (
                         <WelcomeScreen onQuickReply={handleQuickReply} />
@@ -176,20 +187,28 @@ export default function ChatInterface() {
 
                                         {products.length > 0 && (
                                             <div className="pl-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 animate-fade-in-up">
-                                                {products.slice(0, 6).map((product, idx) => (
-                                                    <ProductCard
-                                                        key={`${product.url}-${idx}`}
-                                                        name={product.name}
-                                                        price={product.price}
-                                                        description={
-                                                            product.description.length > 120
-                                                                ? product.description.slice(0, 120) + '...'
-                                                                : product.description
-                                                        }
-                                                        imageUrl={product.imageUrl}
-                                                        productUrl={product.url}
-                                                    />
-                                                ))}
+                                                {products.slice(0, 6).map((product, idx) => {
+                                                    const isSelected = !!selectedProducts.find(p => p.id === product.id);
+                                                    return (
+                                                        <ProductCard
+                                                            key={`${product.id}-${idx}`}
+                                                            name={product.name}
+                                                            price={product.priceFormatted} // Use formatted price
+                                                            description={
+                                                                product.description.length > 120
+                                                                    ? product.description.slice(0, 120) + '...'
+                                                                    : product.description
+                                                            }
+                                                            imageUrl={product.imageUrl}
+                                                            productUrl={product.productUrl}
+                                                            isOneHourDelivery={product.isOneHourDelivery}
+                                                            promo={product.promo}
+                                                            productImageTag={product.productImageTag}
+                                                            isSelected={isSelected}
+                                                            onToggleSelect={() => toggleProductSelection(product)}
+                                                        />
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
@@ -220,9 +239,23 @@ export default function ChatInterface() {
                 </div>
             </div>
 
+            {/* Comparison UI */}
+            <ComparisonBar
+                selectedProducts={selectedProducts}
+                onClear={() => setSelectedProducts([])}
+                onCompare={() => setIsComparisonOpen(true)}
+            />
+
+            <ComparisonModal
+                isOpen={isComparisonOpen}
+                onClose={() => setIsComparisonOpen(false)}
+                products={selectedProducts}
+                onRemoveProduct={(id) => setSelectedProducts(prev => prev.filter(p => p.id !== id))}
+            />
+
             {/* Quick replies + Input area */}
             <div
-                className="border-t shrink-0"
+                className="border-t shrink-0 relative z-30"
                 style={{
                     borderColor: 'var(--edible-border)',
                     backgroundColor: 'var(--edible-card-bg)',

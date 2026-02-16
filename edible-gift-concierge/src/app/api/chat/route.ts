@@ -78,12 +78,16 @@ export async function POST(req: Request) {
                             .describe(
                                 'STRICT minimum price filter. If the user asks for "premium" or "upscale" options relative to a product priced at $X, set this to X. Products below this price will be EXCLUDED. Always set this for premium/upscale requests.'
                             ),
+                        zipCode: z
+                            .string()
+                            .optional()
+                            .describe('Recipient ZIP code for delivery availability check.'),
                     }),
-                    execute: async ({ keyword, maxPrice, minPrice }) => {
-                        console.log(`[Chat API] Tool call: search_products("${keyword}", maxPrice=${maxPrice}, minPrice=${minPrice})`);
+                    execute: async ({ keyword, maxPrice, minPrice, zipCode }) => {
+                        console.log(`[Chat API] Tool call: search_products("${keyword}", maxPrice=${maxPrice}, minPrice=${minPrice}, zipCode=${zipCode})`);
 
                         try {
-                            let products = await searchProductsServer(keyword);
+                            let products = await searchProductsServer(keyword, zipCode);
 
                             // STRICT server-side price filtering
                             if (maxPrice !== undefined) {
@@ -104,14 +108,18 @@ export async function POST(req: Request) {
                             }
 
                             const topProducts = products.slice(0, 15).map((p) => ({
+                                id: p.id,
                                 name: p.name,
-                                price: p.priceFormatted,
-                                priceNumeric: p.price,
+                                price: p.price,
+                                priceFormatted: p.priceFormatted,
                                 description: p.description,
-                                url: p.productUrl,
+                                productUrl: p.productUrl,
                                 imageUrl: p.imageUrl,
                                 category: p.category,
                                 occasion: p.occasion,
+                                isOneHourDelivery: p.isOneHourDelivery,
+                                promo: p.promo,
+                                productImageTag: p.productImageTag,
                             }));
 
                             console.log(
@@ -164,10 +172,14 @@ export async function POST(req: Request) {
                             .describe(
                                 'STRICT minimum price. If user wants "premium" version of a $50 product, set to 50. Products below this are EXCLUDED.'
                             ),
+                        zipCode: z
+                            .string()
+                            .optional()
+                            .describe('Recipient ZIP code for delivery availability check.'),
                     }),
-                    execute: async ({ productName, attributes, maxPrice, minPrice }) => {
+                    execute: async ({ productName, attributes, maxPrice, minPrice, zipCode }) => {
                         console.log(
-                            `[Chat API] Tool call: find_similar_products("${productName}", "${attributes}", maxPrice=${maxPrice}, minPrice=${minPrice})`
+                            `[Chat API] Tool call: find_similar_products("${productName}", "${attributes}", maxPrice=${maxPrice}, minPrice=${minPrice}, zipCode=${zipCode})`
                         );
 
                         try {
@@ -180,8 +192,8 @@ export async function POST(req: Request) {
                                 .join(' ');
 
                             const [byAttributes, byName] = await Promise.all([
-                                searchProductsServer(attributeKeywords),
-                                searchProductsServer(productName.split(' ').slice(0, 2).join(' ')),
+                                searchProductsServer(attributeKeywords, zipCode),
+                                searchProductsServer(productName.split(' ').slice(0, 2).join(' '), zipCode),
                             ]);
 
                             // Merge results, deduplicate by name, exclude original
@@ -214,14 +226,18 @@ export async function POST(req: Request) {
                             }
 
                             const topProducts = merged.slice(0, 10).map((p) => ({
+                                id: p.id,
                                 name: p.name,
-                                price: p.priceFormatted,
-                                priceNumeric: p.price,
+                                price: p.price,
+                                priceFormatted: p.priceFormatted,
                                 description: p.description,
-                                url: p.productUrl,
+                                productUrl: p.productUrl,
                                 imageUrl: p.imageUrl,
                                 category: p.category,
                                 occasion: p.occasion,
+                                isOneHourDelivery: p.isOneHourDelivery,
+                                promo: p.promo,
+                                productImageTag: p.productImageTag,
                             }));
 
                             console.log(

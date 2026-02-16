@@ -9,6 +9,9 @@ export interface Product {
     description: string;
     category?: string;
     occasion?: string;
+    isOneHourDelivery?: boolean;
+    promo?: string;
+    productImageTag?: string;
 }
 
 export interface Message {
@@ -48,4 +51,5 @@ export interface SearchResult {
     promo: string;
     nonPromo: string;
     sizeCount: number;
+    price?: number;
 }
