@@ -237,20 +237,19 @@ export default function ChatInterface() {
         },
     });
 
-    // Restore saved messages on initial mount
-    const hasRestoredRef = useRef(false);
-    useEffect(() => {
-        if (!hasRestoredRef.current) {
-            hasRestoredRef.current = true;
-            const saved = loadMessagesForSession(activeChatId);
-            if (saved.length > 0) {
-                setMessages(saved);
-                prevMsgCountRef.current = saved.length;
-            }
-        }
-    }, [activeChatId, setMessages]);
-
     const isLoading = status === 'submitted' || status === 'streaming';
+
+    // ─── Load saved messages whenever activeChatId changes (mount + history switch) ───
+    useEffect(() => {
+        const saved = loadMessagesForSession(activeChatId);
+        if (saved.length > 0) {
+            setMessages(saved);
+            prevMsgCountRef.current = saved.length;
+        } else {
+            prevMsgCountRef.current = 0;
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeChatId]);
 
     // ─── Auto-save messages to localStorage when they change ───
     const prevMsgCountRef = useRef(0);
@@ -296,15 +295,13 @@ export default function ChatInterface() {
     }, [setMessages]);
 
     const loadChat = useCallback((sessionId: string) => {
-        const savedMessages = loadMessagesForSession(sessionId);
+        // Just switch the ID — the useEffect on activeChatId handles loading messages
         setActiveChatId(sessionId);
-        setMessages(savedMessages);
-        prevMsgCountRef.current = savedMessages.length;
         setCurrentQuickReplies([]);
         setSelectedProducts([]);
         try { localStorage.setItem(ACTIVE_CHAT_KEY, sessionId); } catch { /* ignore */ }
         setIsHistoryOpen(false);
-    }, [setMessages]);
+    }, []);
 
     const deleteChat = useCallback((sessionId: string) => {
         deleteMessagesForSession(sessionId);
@@ -434,6 +431,7 @@ export default function ChatInterface() {
                     onClick={() => setIsCartOpen(true)}
                     className="relative bg-white/80 backdrop-blur-sm shadow-sm border border-green-100 text-green-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-green-50 transition-all hover:scale-105"
                     aria-label={`Open cart (${cartItemCount} items)`}
+                    title="View your cart items"
                 >
                     <ShoppingCart size={14} />
                     Cart
@@ -447,6 +445,7 @@ export default function ChatInterface() {
                     onClick={() => setIsFavoritesOpen(true)}
                     className="relative bg-white/80 backdrop-blur-sm shadow-sm border border-red-100 text-red-500 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-red-50 transition-all hover:scale-105"
                     aria-label={`Open saved items (${favoriteProducts.length})`}
+                    title="View your saved favorite products"
                 >
                     <Heart size={14} fill={favoriteProducts.length > 0 ? 'currentColor' : 'none'} />
                     Saved
@@ -460,6 +459,7 @@ export default function ChatInterface() {
                     onClick={() => setIsSidebarOpen(true)}
                     className="bg-white/80 backdrop-blur-sm shadow-sm border border-blue-100 text-blue-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-blue-50 transition-all hover:scale-105"
                     aria-label="Open gift planner sidebar"
+                    title="View your gift context — occasion, recipient, budget"
                 >
                     <PanelRightOpen size={14} /> Gift Planner
                     {(giftContext.recipient || giftContext.occasion || giftContext.budget) && (
@@ -468,10 +468,11 @@ export default function ChatInterface() {
                 </button>
                 <button
                     onClick={() => setIsSpinWheelOpen(true)}
-                    aria-label="Open Spin the Wheel to discover products"
+                    aria-label="Spin the wheel to discover gift ideas"
+                    title="Spin the wheel to discover random gift ideas"
                     className="bg-white/80 backdrop-blur-sm shadow-sm border border-orange-100 text-orange-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-orange-50 transition-all hover:scale-105"
                 >
-                    <Sparkles size={14} /> Spin & Win
+                    <Sparkles size={14} /> Surprise Me
                 </button>
             </div>
 
@@ -481,6 +482,7 @@ export default function ChatInterface() {
                     onClick={() => setIsHistoryOpen(true)}
                     className="bg-white/80 backdrop-blur-sm shadow-sm border border-gray-200 text-gray-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-gray-50 transition-all hover:scale-105"
                     aria-label="Open chat history"
+                    title="Start a new chat or view previous conversations"
                 >
                     <Menu size={14} />
                     History

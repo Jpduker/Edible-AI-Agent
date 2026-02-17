@@ -244,7 +244,7 @@ export function SpinWheelModal({ isOpen, onClose }: SpinWheelModalProps) {
 
                 <div className="text-center z-10 shrink-0">
                     <h2 className="text-2xl font-bold text-gray-900 flex items-center justify-center gap-2">
-                        Spin for Ideas! <Sparkles className="text-yellow-500" size={24} />
+                        Surprise Me! <Sparkles className="text-yellow-500" size={24} />
                     </h2>
                     <p className="text-gray-500 text-sm mt-1">
                         {isLoadingProducts ? 'Loading fresh products...' : 'Stuck? Let fate decide the perfect gift.'}
@@ -312,7 +312,7 @@ export function SpinWheelModal({ isOpen, onClose }: SpinWheelModalProps) {
                                         : 'bg-gradient-to-r from-red-500 to-pink-500 hover:shadow-red-500/30'
                                     }`}
                             >
-                                {isSpinning ? 'Spinning...' : isLoadingProducts ? 'Loading...' : 'SPIN THE WHEEL'}
+                                {isSpinning ? 'Spinning...' : isLoadingProducts ? 'Loading...' : 'SPIN & DISCOVER'}
                             </button>
                             <button
                                 onClick={fetchDynamicProducts}
@@ -325,7 +325,7 @@ export function SpinWheelModal({ isOpen, onClose }: SpinWheelModalProps) {
                     ) : (
                         <div className="w-full animate-slide-in-up">
                             <div className="text-center mb-4">
-                                <p className="text-sm font-medium text-gray-500 mb-1">We found your match!</p>
+                                <p className="text-sm font-medium text-gray-500 mb-1">Here's a gift idea for you!</p>
                                 <button
                                     onClick={spinWheel}
                                     className="text-xs text-red-600 font-bold hover:underline"

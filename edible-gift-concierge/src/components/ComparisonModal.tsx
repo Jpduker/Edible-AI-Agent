@@ -229,11 +229,39 @@ export function ComparisonModal({
                             </div>
                         )}
 
-                        {aiAnalysis && (
-                            <div className="prose prose-sm max-w-none">
-                                <MessageBubble role="assistant" content={aiAnalysis} />
-                            </div>
-                        )}
+                        {aiAnalysis && (() => {
+                            const recSplit = aiAnalysis.split(/\*\*Recommendation:\*\*/);
+                            const mainPart = recSplit[0];
+                            const recPart = recSplit.length > 1 ? recSplit[1].trim() : null;
+                            // Bold the first sentence of the recommendation
+                            let recFirstSentence = '';
+                            let recRest = '';
+                            if (recPart) {
+                                const dotIdx = recPart.indexOf('.');
+                                if (dotIdx > 0 && dotIdx < 200) {
+                                    recFirstSentence = recPart.slice(0, dotIdx + 1);
+                                    recRest = recPart.slice(dotIdx + 1).trim();
+                                } else {
+                                    recFirstSentence = recPart;
+                                }
+                            }
+                            return (
+                                <div>
+                                    <div className="prose prose-sm max-w-none">
+                                        <MessageBubble role="assistant" content={mainPart.trim()} />
+                                    </div>
+                                    {recPart && (
+                                        <div className="mt-4 p-4 rounded-xl border-2 border-blue-200 bg-blue-50/60">
+                                            <p className="text-sm font-bold mb-1" style={{ color: '#1e3a5f' }}>Recommendation:</p>
+                                            <p className="text-sm leading-relaxed" style={{ color: '#1e3a5f' }}>
+                                                <strong>{recFirstSentence}</strong>
+                                                {recRest && ` ${recRest}`}
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
                 )}
             </div>

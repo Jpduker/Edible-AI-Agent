@@ -1,0 +1,51 @@
+# ─── Edible Gift Concierge — Full Stack Docker Compose ───
+# Run: docker-compose up --build
+# Access: http://localhost:3000
+
+services:
+  # Python FastAPI Backend (LangChain + ChromaDB)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: edible-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CHROMA_PERSIST_DIR=./chroma_data
+      - EDIBLE_API_URL=https://www.ediblearrangements.com/api/search/
+      - EDIBLE_BASE_URL=https://www.ediblearrangements.com
+      - HOST=0.0.0.0
+      - PORT=8000
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+    volumes:
+      - chroma-data:/app/chroma_data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./edible-gift-concierge
+      dockerfile: Dockerfile
+      args:
+        - BACKEND_URL=http://backend:8000
+    container_name: edible-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  chroma-data:
+    driver: local

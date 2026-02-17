@@ -224,7 +224,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Design Decisions
 
-See [DESIGN_DECISIONS.md](./DESIGN_DECISIONS.md) for a comprehensive record of 80+ design, architectural, and business decisions — each with detailed reasoning.
+See [DESIGN_DECISIONS.md](./edible-gift-concierge/DESIGN_DECISIONS.md) for a comprehensive record of 80+ design, architectural, and business decisions — each with detailed reasoning.
 
 ---
 

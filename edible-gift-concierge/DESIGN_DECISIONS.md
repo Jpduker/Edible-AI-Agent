@@ -547,3 +547,179 @@ Data now flows: Edible API → normalizeProduct → tool results → Claude (for
 **Decision**: Updated Claude's system prompt to instruct it to proactively check `allergyInfo` and `ingredients` in tool results, flag allergens when users mention dietary needs, reference specific product data, and always caveat with "double-check on the product page."
 
 **Reasoning**: This turns the chatbot into a dietary-aware assistant — a feature most e-commerce chatbots lack. When a user says "my mom has a nut allergy," Claude can now scan search results and highlight which products are safe vs. risky based on actual product data, rather than giving generic "check the website" responses. The caveat protects against data staleness.
+
+---
+
+## Phase 4 — UX Polish, Observability & Complexity Analysis
+
+### 71. Mid-Conversation Context Change Handling (System Prompt v2.0)
+**Decision**: Added a dedicated `MID-CONVERSATION CONTEXT CHANGES` section to the system prompt that instructs Claude to immediately acknowledge and act on budget, recipient, occasion, or preference changes mid-chat.
+
+**Reasoning**: Users frequently change their minds during gifting conversations — "Actually, make it $100 instead of $75" or "Wait, it's for my boss, not my friend." The frontend's `gift-context-extractor.ts` already handled this correctly (iterating all messages with last-match-wins), but the AI itself would sometimes ignore the update and keep recommending based on the original context. The new prompt section enforces four rules:
+1. Immediately acknowledge the change ("Got it — updated to $100!")
+2. Re-search if the change materially affects results (new budget, different recipient type)
+3. Never ignore a mid-conversation context change
+4. Reference the Gift Planner sidebar's auto-update so the AI's behavior matches the UI
+
+**Architecture**: Pure prompt engineering — no code change required. The sidebar already auto-updates because `gift-context-extractor.ts` recomputes on every new message via `useMemo`.
+
+### 72. AI Compare Recommendation Styling — Dark Blue with Bold Lead
+**Decision**: In the `ComparisonModal`, the AI-generated recommendation section is visually separated from the main comparison body, rendered in a dark blue styled box (`#1e3a5f` text, `border-blue-200`, `bg-blue-50/60` background) with the first sentence bolded.
+
+**Reasoning**: The recommendation is the most important part of the AI comparison — it's the actionable takeaway. Burying it at the end of a wall of text reduces its impact. Separating it into a distinct visual container with a contrasting color (dark blue vs. the default chat bubble styling) creates an information hierarchy: scan the comparison, then focus on the recommendation. Bolding the first sentence provides an instant "tl;dr" for users who skim.
+
+**Implementation**: The `aiAnalysis` string is split on `**Recommendation:**`. The pre-recommendation content renders in a standard `MessageBubble`. The recommendation renders in a custom `<div>` with:
+- `border-2 border-blue-200 rounded-xl` for the container
+- `bg-blue-50/60` for subtle blue background
+- Text color `#1e3a5f` (dark navy) for readability
+- First sentence extracted via regex and wrapped in `<strong>` tags
+- A "🏆 Our Recommendation" header for clarity
+
+### 73. Single-Click Chat History Loading (React State Race Fix)
+**Decision**: Refactored `ChatInterface.tsx` to use a `useEffect` triggered by `activeChatId` changes instead of calling `setMessages` directly in the `loadChat` event handler.
+
+**Root Cause**: The double-click bug was a React state batching issue with Vercel AI SDK's `useChat`. When `loadChat` called both `setActiveChatId(newId)` and `setMessages(savedMessages)` in the same event handler, React batched the state updates. However, `setMessages` was still bound to the OLD `useChat` instance (keyed by the previous `activeChatId`). The first click updated the id but loaded messages into the wrong instance. The second click worked because the id was already correct.
+
+**Fix**: `loadChat` now only calls `setActiveChatId(sessionId)` to update which chat is active, plus clears transient UI state (comparison bar, sidebar). A separate `useEffect` watches `activeChatId` and calls `setMessages(loadMessagesForSession(activeChatId))` — by this time, `useChat` has re-keyed to the new id, so messages load into the correct instance.
+
+**Lesson**: When using keyed hooks like `useChat({ id })`, always defer dependent state updates to effects rather than setting them synchronously in the same handler that changes the key.
+
+### 74. Header Button Tooltips
+**Decision**: Added native `title` attributes to all header action buttons — History, Favorites, Cart, and Gift Planner.
+
+**Tooltip Text**:
+- **History** (clock icon): "Start a new chat or view previous conversations"
+- **Favorites** (heart icon): "View your saved favorite products"
+- **Cart** (shopping bag icon): "View your cart items"
+- **Gift Planner** (sparkles icon): "View your gift context — occasion, recipient, budget"
+
+**Reasoning**: Icon-only buttons are compact but can confuse first-time users, especially the Gift Planner (sparkles) icon which isn't universally recognized. Native `title` attributes provide zero-cost, accessible hover hints without adding visual clutter. They also improve accessibility for screen readers via implicit `aria-label` behavior.
+
+**Why native `title` over custom tooltip component**: For a POC, native tooltips are sufficient. Custom tooltips (with animations, positioning, mobile support) would add complexity disproportionate to the value. Production would use a tooltip library like Radix or Headless UI.
+
+### 75. Token Usage Measurement & Analysis
+**Decision**: Added per-request token logging to `chat_chain.py` that reports system prompt tokens, conversation tokens, and actual Anthropic API usage metadata (input/output/total) for every LLM step.
+
+**Measured Results** (Claude Sonnet 4, prompt v2.0):
+
+| Scenario | Messages | LLM Steps | Input Tokens | Output Tokens | Total |
+|---|---|---|---|---|---|
+| Greeting (no tool) | 1 | 1 | 4,637 | 72 | **4,709** |
+| Full flow + 1 search (14 products) | 9 | 2 | 14,729 | 279 | **15,008** |
+| Long chat + budget change + search (15 products) | 15 | 2 | 15,703 | 356 | **16,059** |
+
+**Key Findings**:
+- **System prompt is ~4,637 tokens** — this is the fixed cost on every single request, regardless of conversation length
+- **Conversation history** adds only ~100–272 tokens for short-to-medium chats (grows linearly with message count)
+- **Tool results dominate cost**: each search returning ~15 products injects ~5,300–6,200 tokens of product JSON into the context
+- **Output tokens are minimal**: 72–356 tokens per request (Claude is concise)
+- **Average per request**: ~11,925 total tokens across all scenarios (heavily weighted by whether a search tool fires)
+- **Trim threshold** (80K tokens) is well above typical usage — most conversations stay under 16K tokens
+
+**Cost Implication**: At Anthropic's Sonnet pricing (~$3/$15 per million tokens in/out), a typical 10-message conversation with 2 searches costs approximately $0.05–$0.08. The system prompt alone accounts for ~30–98% of input tokens depending on conversation stage.
+
+**Optimization Opportunities**: Prompt compression could reduce the 4,637-token system prompt by 20–30%. Caching the system prompt via Anthropic's prompt caching feature would reduce cost by ~90% on cached requests. Product JSON could be trimmed to essential fields only (name, price, URL) to cut tool result tokens by ~50%.
+
+### 76. Similarity Search & Overall Search Time Complexity
+**Decision**: Documented the algorithmic complexity of every search path in the system.
+
+**ChromaDB Vector Search (HNSW Algorithm)**:
+- **Algorithm**: Hierarchical Navigable Small World (HNSW) graph
+- **Search complexity**: O(log N) where N = number of indexed products (currently 455)
+- **Space complexity**: O(N × M) where M = connections per node (default 16)
+- **Distance metric**: Cosine similarity, computed in O(d) per comparison where d = embedding dimension (384 for `all-MiniLM-L6-v2`)
+
+**`similarity_search()` in `embeddings.py`**: **O(log N + K)**
+- O(log N) for HNSW approximate nearest neighbor traversal
+- O(K) for returning top-K results (K ≤ 10)
+- WHERE clauses (price, delivery) filter during HNSW traversal, not post-search
+
+**`search_products_tool()` — Live API Path**: **O(R)**
+- O(1) for the HTTP API call (constant algorithmic cost; ~600–700ms network latency)
+- O(R) linear scan of R returned results for price/delivery filtering (R ≤ 50 from API, capped at 15 output)
+
+**`find_similar_products_tool()` — Hybrid Path**: **O(log N + R + (K+R) log(K+R))**
+- O(log N) for ChromaDB vector search
+- O(1) for live API call (sequential with vector search)
+- O(K + R) to merge results from both sources
+- O((K+R) log(K+R)) worst case for deduplication via sorting
+
+**End-to-End Pipeline Breakdown**:
+
+| Phase | Complexity | Real-World Latency |
+|---|---|---|
+| Embedding generation (local) | O(d) | ~10ms |
+| Vector search (ChromaDB HNSW) | O(log N) | ~5ms for N=455 |
+| Live API call (Edible) | O(1) | ~600–700ms |
+| Result filtering/merge | O(R) | <1ms |
+| LLM inference (Claude) | O(T) | ~1–4s (T = token count) |
+
+**Key Insight**: The pipeline is **I/O-bound, not compute-bound**. Network latency (Edible API call + Anthropic LLM inference) dominates at ~2–5 seconds total, while all algorithmic search operations complete in under 20ms combined. Optimizing the HNSW index structure or switching distance metrics would yield negligible real-world improvement. The highest-impact optimization would be parallelizing the API call with the vector search in `find_similar_products_tool()`, saving ~600ms on hybrid searches.
+
+### 77. "Surprise Me" Rename (from "Spin & Win")
+**Decision**: Renamed the spin wheel feature from "Spin & Win" to "Surprise Me" across all UI surfaces — button label, modal header, and CTA text.
+
+**Reasoning**: "Spin & Win" implies the user is winning a prize, discount, or reward — a common dark pattern in e-commerce that creates false expectations. Since the wheel simply suggests random gift ideas from the catalog (no discounts, no prizes), the name is misleading. "Surprise Me" accurately communicates the feature's purpose: serendipitous gift discovery. The modal header changed from "Spin for Ideas!" to "Surprise Me!" and the action button from "SPIN THE WHEEL" to "SPIN & DISCOVER" to reinforce the discovery framing. The result text changed from "We found your match!" to "Here's a gift idea for you!" — neutral and honest.
+
+**Also added**: Tooltip on the Surprise Me button: "Spin the wheel to discover random gift ideas" — clarifying the feature for first-time users.
+
+### 78. Full-Stack Containerization (Docker + Docker Compose)
+**Decision**: Created Dockerfiles for both the Python backend and Next.js frontend, plus a `docker-compose.yml` for one-command full-stack deployment.
+
+**Architecture**:
+```
+docker-compose.yml          → Orchestrates both services
+├── backend/Dockerfile      → Python 3.11-slim + FastAPI + ChromaDB + sentence-transformers
+└── edible-gift-concierge/Dockerfile → Node 20-alpine, multi-stage (deps → build → runner)
+```
+
+**Backend Dockerfile** (`python:3.11-slim`):
+- Single-stage build: installs `requirements.txt`, copies app code and pre-built `chroma_data/` (455 products)
+- Includes `build-essential` for native extensions (chromadb, numpy, sentence-transformers)
+- Health check pings `/health` endpoint every 30s
+- ChromaDB data is baked into the image to avoid runtime ingestion delay (~2 min)
+
+**Frontend Dockerfile** (`node:20-alpine`, 3-stage):
+- **Stage 1 (deps)**: `npm ci` in isolation for optimal Docker layer caching
+- **Stage 2 (builder)**: Copies source + node_modules, runs `npm run build` producing standalone output
+- **Stage 3 (runner)**: Minimal runtime image with only `.next/standalone` and `.next/static` — no dev dependencies, no source code. Runs as non-root `nextjs` user (UID 1001)
+- Requires `output: "standalone"` in `next.config.ts`
+
+**Docker Compose**:
+- Backend starts first with health check gate (`service_healthy`)
+- Frontend uses `depends_on` with `condition: service_healthy` — won't start until backend is confirmed ready
+- `BACKEND_URL` environment variable connects frontend rewrites to backend container via Docker networking (`http://backend:8000`)
+- ChromaDB data persisted via named volume (`chroma-data`) to survive container restarts
+- Single command to run: `docker-compose up --build`
+
+**Trade-offs**:
+- Backend image is ~2GB due to sentence-transformers + PyTorch dependencies. Production would use a slimmer embedding approach (ONNX runtime) or a hosted embedding API
+- ChromaDB data is baked in — fresh products require rebuilding the image or mounting a volume with updated data. Production would use a scheduled re-ingestion cron job
+- No HTTPS in containers — TLS termination happens at Vercel/Cloudflare/load balancer layer
+
+### 79. Vercel Deployment Configuration
+**Decision**: Configured the Next.js frontend for Vercel deployment with `vercel.json`, and made the backend URL configurable via environment variable.
+
+**Frontend (Vercel-native)**:
+- `vercel.json` specifies `framework: "nextjs"`, build command, and output directory
+- `BACKEND_URL` environment variable (set as `@backend-url` Vercel secret) controls where API rewrites point
+- API routes use `Cache-Control: no-store` headers to prevent stale responses
+- Region set to `iad1` (US East) for low-latency Anthropic API calls
+
+**Backend URL Configuration**:
+- `next.config.ts` rewrites now use `process.env.BACKEND_URL || "http://localhost:8000"` instead of hardcoded localhost
+- Works across all environments: local dev (default localhost), Docker Compose (`http://backend:8000`), Vercel (deployed backend URL)
+
+**Backend Deployment Options**:
+- **Option A — Render/Railway/Fly.io**: Deploy the backend Dockerfile as a persistent service. Best for ChromaDB persistence and sentence-transformers model loading (one-time startup cost amortized across requests)
+- **Option B — AWS ECS/GCP Cloud Run**: Container-as-a-service with auto-scaling. Cold starts may be 15-30s due to model loading
+- **Option C — Self-hosted VPS**: Most control, lowest cost at scale. Run `docker-compose up -d` on any machine with Docker
+
+**Why not Vercel Serverless for the backend**: The Python backend loads a 90MB sentence-transformers model into memory and maintains a ChromaDB persistent database — both require a long-running process. Vercel's serverless functions have a 250MB package limit and cold-start on every request, making them unsuitable for this architecture. The backend is designed as a stateful service, not a stateless function.
+
+### 80. Next.js Standalone Output Mode
+**Decision**: Added `output: "standalone"` to `next.config.ts` to enable Docker-optimized production builds.
+
+**Reasoning**: Next.js standalone mode produces a self-contained `server.js` that includes only the files needed to run in production — no `node_modules`, no source code. This reduces the Docker image from ~1GB (full `node_modules`) to ~150MB (standalone). The trade-off is that `next.config.ts` rewrites and middleware are baked into the build, requiring a rebuild to change the backend URL. This is acceptable since environment variables are injected at runtime for dynamic values.
+
+**Also fixed**: Excluded `test/` directory from `tsconfig.json` — legacy test files referencing the old TypeScript API (pre-Python migration) were breaking the production build.

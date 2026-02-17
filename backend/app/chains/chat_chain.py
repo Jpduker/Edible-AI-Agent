@@ -146,7 +146,16 @@ async def chat_stream(messages: list[dict]) -> AsyncGenerator[str, None]:
     system_msg = SystemMessage(content=get_system_prompt())
     all_messages = [system_msg] + lc_messages
 
-    logger.info(f"Chat request: {len(lc_messages)} messages, ~{_estimate_tokens(lc_messages)} tokens, prompt={SYSTEM_PROMPT_VERSION}")
+    system_tokens = _estimate_tokens([system_msg])
+    user_tokens = _estimate_tokens(lc_messages)
+    total_input_tokens = system_tokens + user_tokens
+    logger.info(
+        f"Chat request: {len(lc_messages)} msgs | "
+        f"System prompt: ~{system_tokens} tokens | "
+        f"User conversation: ~{user_tokens} tokens | "
+        f"Total input: ~{total_input_tokens} tokens | "
+        f"prompt={SYSTEM_PROMPT_VERSION}"
+    )
 
     # ─── Emit stream start ───
     msg_id = f"msg-{uuid.uuid4().hex[:12]}"
@@ -164,6 +173,11 @@ async def chat_stream(messages: list[dict]) -> AsyncGenerator[str, None]:
         # For the first step after tool results, try streaming directly
         # For other steps (tool-calling), use ainvoke to get the full response
         response = await llm_with_tools.ainvoke(all_messages)
+
+        # Log token usage from the response metadata (Anthropic returns actual token counts)
+        usage = getattr(response, 'usage_metadata', None) or getattr(response, 'response_metadata', {}).get('usage', {})
+        if usage:
+            logger.info(f"Step {step} token usage: {usage}")
 
         # Check if Claude wants to call tools
         if response.tool_calls:
