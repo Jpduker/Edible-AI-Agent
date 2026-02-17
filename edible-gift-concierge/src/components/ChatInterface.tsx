@@ -17,7 +17,77 @@ import { SpinWheelModal } from './SpinWheelModal';
 import GiftContextSidebar from './GiftContextSidebar';
 import { GiftMessageComposer } from './GiftMessageComposer';
 import FavoritesDrawer from './FavoritesDrawer';
-import { Sparkles, PanelRightOpen, Heart } from 'lucide-react';
+import { CartDrawer, CartItem } from './CartDrawer';
+import ChatHistorySidebar, { ChatSession } from './ChatHistorySidebar';
+import { Sparkles, PanelRightOpen, Heart, ShoppingCart, Menu } from 'lucide-react';
+
+// ─── Chat Session Persistence Helpers ───
+
+const SESSIONS_STORAGE_KEY = 'edible-chat-sessions';
+const ACTIVE_CHAT_KEY = 'edible-active-chat-id';
+
+function generateChatId(): string {
+    return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function loadSessions(): ChatSession[] {
+    if (typeof window === 'undefined') return [];
+    try {
+        const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveSessions(sessions: ChatSession[]) {
+    try {
+        localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+    } catch { /* quota */ }
+}
+
+function loadMessagesForSession(sessionId: string): UIMessage[] {
+    if (typeof window === 'undefined') return [];
+    try {
+        const raw = localStorage.getItem(`edible-chat-msgs-${sessionId}`);
+        return raw ? JSON.parse(raw) : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveMessagesForSession(sessionId: string, messages: UIMessage[]) {
+    try {
+        localStorage.setItem(`edible-chat-msgs-${sessionId}`, JSON.stringify(messages));
+    } catch { /* quota */ }
+}
+
+function deleteMessagesForSession(sessionId: string) {
+    try {
+        localStorage.removeItem(`edible-chat-msgs-${sessionId}`);
+    } catch { /* ignore */ }
+}
+
+function getSessionTitle(messages: UIMessage[]): string {
+    const firstUser = messages.find((m) => m.role === 'user');
+    if (!firstUser) return 'New Chat';
+    const text = firstUser.parts
+        ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+        .map((p) => p.text)
+        .join('') || 'New Chat';
+    return text.length > 40 ? text.slice(0, 40) + '…' : text;
+}
+
+function getSessionPreview(messages: UIMessage[]): string {
+    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    if (!lastAssistant) return 'No response yet';
+    const text = lastAssistant.parts
+        ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+        .map((p) => p.text)
+        .join('') || '';
+    const clean = text.replace(/\[\[[^\]]+\]\]\s*$/, '').trim();
+    return clean.length > 60 ? clean.slice(0, 60) + '…' : clean || 'No response yet';
+}
 
 /**
  * Parse quick replies from the end of AI messages.
@@ -103,7 +173,57 @@ export default function ChatInterface() {
     });
     const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
 
-    const { messages, sendMessage, status, error } = useChat({
+    // Cart State
+    const [cartItems, setCartItems] = useState<CartItem[]>([]);
+    const [isCartOpen, setIsCartOpen] = useState(false);
+
+    // ─── Chat History State ───
+    const [activeChatId, setActiveChatId] = useState<string>(() => {
+        if (typeof window === 'undefined') return generateChatId();
+        try {
+            const saved = localStorage.getItem(ACTIVE_CHAT_KEY);
+            return saved || generateChatId();
+        } catch {
+            return generateChatId();
+        }
+    });
+    const [chatSessions, setChatSessions] = useState<ChatSession[]>(() => loadSessions());
+    const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+    const addToCart = useCallback((product: Product) => {
+        setCartItems((prev) => {
+            const existing = prev.find((item) => item.product.id === product.id);
+            if (existing) {
+                return prev.map((item) =>
+                    item.product.id === product.id
+                        ? { ...item, quantity: item.quantity + 1 }
+                        : item
+                );
+            }
+            return [...prev, { product, quantity: 1 }];
+        });
+    }, []);
+
+    const updateCartQuantity = useCallback((productId: string, quantity: number) => {
+        setCartItems((prev) =>
+            prev.map((item) =>
+                item.product.id === productId ? { ...item, quantity } : item
+            )
+        );
+    }, []);
+
+    const removeFromCart = useCallback((productId: string) => {
+        setCartItems((prev) => prev.filter((item) => item.product.id !== productId));
+    }, []);
+
+    const clearCart = useCallback(() => {
+        setCartItems([]);
+    }, []);
+
+    const cartItemCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+
+    const { messages, sendMessage, status, error, setMessages } = useChat({
+        id: activeChatId,
         transport: new DefaultChatTransport({ api: '/api/chat' }),
         onFinish: ({ message }: { message: UIMessage }) => {
             const text = getMessageText(message);
@@ -117,7 +237,87 @@ export default function ChatInterface() {
         },
     });
 
+    // Restore saved messages on initial mount
+    const hasRestoredRef = useRef(false);
+    useEffect(() => {
+        if (!hasRestoredRef.current) {
+            hasRestoredRef.current = true;
+            const saved = loadMessagesForSession(activeChatId);
+            if (saved.length > 0) {
+                setMessages(saved);
+                prevMsgCountRef.current = saved.length;
+            }
+        }
+    }, [activeChatId, setMessages]);
+
     const isLoading = status === 'submitted' || status === 'streaming';
+
+    // ─── Auto-save messages to localStorage when they change ───
+    const prevMsgCountRef = useRef(0);
+    useEffect(() => {
+        // Only save when messages actually changed (new messages added or response finished)
+        if (messages.length > 0 && messages.length !== prevMsgCountRef.current) {
+            prevMsgCountRef.current = messages.length;
+            saveMessagesForSession(activeChatId, messages);
+
+            // Update session metadata
+            setChatSessions((prev) => {
+                const existing = prev.find((s) => s.id === activeChatId);
+                const updated: ChatSession = {
+                    id: activeChatId,
+                    title: getSessionTitle(messages),
+                    preview: getSessionPreview(messages),
+                    messageCount: messages.length,
+                    createdAt: existing?.createdAt || Date.now(),
+                    updatedAt: Date.now(),
+                };
+                const newSessions = existing
+                    ? prev.map((s) => (s.id === activeChatId ? updated : s))
+                    : [...prev, updated];
+                saveSessions(newSessions);
+                return newSessions;
+            });
+
+            // Persist active chat id
+            try { localStorage.setItem(ACTIVE_CHAT_KEY, activeChatId); } catch { /* ignore */ }
+        }
+    }, [messages, activeChatId]);
+
+    // ─── Chat History Actions ───
+    const createNewChat = useCallback(() => {
+        const newId = generateChatId();
+        setActiveChatId(newId);
+        setMessages([]);
+        setCurrentQuickReplies([]);
+        setSelectedProducts([]);
+        prevMsgCountRef.current = 0;
+        try { localStorage.setItem(ACTIVE_CHAT_KEY, newId); } catch { /* ignore */ }
+        setIsHistoryOpen(false);
+    }, [setMessages]);
+
+    const loadChat = useCallback((sessionId: string) => {
+        const savedMessages = loadMessagesForSession(sessionId);
+        setActiveChatId(sessionId);
+        setMessages(savedMessages);
+        prevMsgCountRef.current = savedMessages.length;
+        setCurrentQuickReplies([]);
+        setSelectedProducts([]);
+        try { localStorage.setItem(ACTIVE_CHAT_KEY, sessionId); } catch { /* ignore */ }
+        setIsHistoryOpen(false);
+    }, [setMessages]);
+
+    const deleteChat = useCallback((sessionId: string) => {
+        deleteMessagesForSession(sessionId);
+        setChatSessions((prev) => {
+            const newSessions = prev.filter((s) => s.id !== sessionId);
+            saveSessions(newSessions);
+            return newSessions;
+        });
+        // If deleting the active chat, create a new one
+        if (sessionId === activeChatId) {
+            createNewChat();
+        }
+    }, [activeChatId, createNewChat]);
 
     // ─── Gift Context: auto-extract from user messages ───
     const giftContext = useMemo(() => {
@@ -228,8 +428,21 @@ export default function ChatInterface() {
 
     return (
         <div className="flex flex-col h-full relative">
-            {/* Header Buttons */}
-            <div className="absolute top-4 right-4 z-40 flex items-center gap-2">
+            {/* Header Buttons — fixed so they stay visible while scrolling */}
+            <div className="fixed top-20 right-6 z-50 flex items-center gap-2">
+                <button
+                    onClick={() => setIsCartOpen(true)}
+                    className="relative bg-white/80 backdrop-blur-sm shadow-sm border border-green-100 text-green-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-green-50 transition-all hover:scale-105"
+                    aria-label={`Open cart (${cartItemCount} items)`}
+                >
+                    <ShoppingCart size={14} />
+                    Cart
+                    {cartItemCount > 0 && (
+                        <span className="bg-green-600 text-white text-[10px] font-bold w-4.5 h-4.5 min-w-[18px] rounded-full flex items-center justify-center">
+                            {cartItemCount}
+                        </span>
+                    )}
+                </button>
                 <button
                     onClick={() => setIsFavoritesOpen(true)}
                     className="relative bg-white/80 backdrop-blur-sm shadow-sm border border-red-100 text-red-500 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-red-50 transition-all hover:scale-105"
@@ -262,6 +475,23 @@ export default function ChatInterface() {
                 </button>
             </div>
 
+            {/* Chat History Toggle — fixed top-left */}
+            <div className="fixed top-20 left-6 z-50">
+                <button
+                    onClick={() => setIsHistoryOpen(true)}
+                    className="bg-white/80 backdrop-blur-sm shadow-sm border border-gray-200 text-gray-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-gray-50 transition-all hover:scale-105"
+                    aria-label="Open chat history"
+                >
+                    <Menu size={14} />
+                    History
+                    {chatSessions.length > 0 && (
+                        <span className="bg-gray-500 text-white text-[10px] font-bold w-4.5 h-4.5 min-w-[18px] rounded-full flex items-center justify-center">
+                            {chatSessions.length}
+                        </span>
+                    )}
+                </button>
+            </div>
+
             {/* Messages area */}
             <div className="flex-1 overflow-y-auto custom-scrollbar pb-20" role="log" aria-live="polite" aria-label="Chat messages">
                 <div className="max-w-3xl mx-auto px-4 py-4" role="region" aria-label="Conversation">
@@ -291,6 +521,7 @@ export default function ChatInterface() {
                                                 {products.slice(0, 6).map((product, idx) => {
                                                     const isSelected = !!selectedProducts.find(p => p.id === product.id);
                                                     const isFav = !!favoriteProducts.find(p => p.id === product.id);
+                                                    const isInCart = !!cartItems.find(item => item.product.id === product.id);
                                                     return (
                                                         <ProductCard
                                                             key={`${product.id}-${idx}`}
@@ -314,6 +545,8 @@ export default function ChatInterface() {
                                                             allergyInfo={product.allergyInfo}
                                                             ingredients={product.ingredients}
                                                             sizeCount={product.sizeCount}
+                                                            onAddToCart={() => addToCart(product)}
+                                                            isInCart={isInCart}
                                                         />
                                                     );
                                                 })}
@@ -359,6 +592,7 @@ export default function ChatInterface() {
                 onClose={() => setIsComparisonOpen(false)}
                 products={selectedProducts}
                 onRemoveProduct={(id) => setSelectedProducts(prev => prev.filter(p => p.id !== id))}
+                giftContext={giftContext}
             />
 
             <SpinWheelModal
@@ -395,6 +629,27 @@ export default function ChatInterface() {
                     setIsFavoritesOpen(false);
                     openComposer(product);
                 }}
+            />
+
+            {/* Cart Drawer */}
+            <CartDrawer
+                isOpen={isCartOpen}
+                onClose={() => setIsCartOpen(false)}
+                items={cartItems}
+                onUpdateQuantity={updateCartQuantity}
+                onRemoveItem={removeFromCart}
+                onClearCart={clearCart}
+            />
+
+            {/* Chat History Sidebar */}
+            <ChatHistorySidebar
+                isOpen={isHistoryOpen}
+                onToggle={() => setIsHistoryOpen(!isHistoryOpen)}
+                sessions={chatSessions}
+                activeChatId={activeChatId}
+                onNewChat={createNewChat}
+                onLoadChat={loadChat}
+                onDeleteChat={deleteChat}
             />
 
             {/* Quick replies + Input area */}

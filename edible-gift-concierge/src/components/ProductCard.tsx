@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Check, Star, Zap, MessageSquareHeart, Heart, ShieldAlert, Layers } from 'lucide-react';
+import { Check, Star, Zap, MessageSquareHeart, Heart, ShieldAlert, Layers, ShoppingCart } from 'lucide-react';
 
 interface ProductCardProps {
     name: string;
@@ -20,6 +20,8 @@ interface ProductCardProps {
     allergyInfo?: string;
     ingredients?: string;
     sizeCount?: number;
+    onAddToCart?: () => void;
+    isInCart?: boolean;
 }
 
 export default function ProductCard({
@@ -39,6 +41,8 @@ export default function ProductCard({
     allergyInfo,
     ingredients,
     sizeCount,
+    onAddToCart,
+    isInCart = false,
 }: ProductCardProps) {
     const [imageError, setImageError] = useState(false);
     const [imageLoaded, setImageLoaded] = useState(false);
@@ -54,7 +58,26 @@ export default function ProductCard({
         >
             {/* Image section */}
             <div className="relative w-full aspect-[4/3] overflow-hidden group" style={{ backgroundColor: '#f8f8f8' }}>
-                {/* Selection Checkbox */}
+                {/* Favorite Heart — top-left */}
+                {onToggleFavorite && (
+                    <button
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onToggleFavorite();
+                        }}
+                        className={`absolute top-3 left-3 z-20 w-9 h-9 rounded-full flex items-center justify-center shadow-md transition-all duration-200 ${isFavorited
+                                ? 'bg-red-500 scale-110'
+                                : 'bg-white/90 hover:bg-white hover:scale-110'
+                            }`}
+                        title={isFavorited ? 'Remove from favorites' : 'Save to favorites'}
+                        aria-label={isFavorited ? 'Remove from favorites' : 'Save to favorites'}
+                    >
+                        <span className="text-lg leading-none">{isFavorited ? '❤️' : '🤍'}</span>
+                    </button>
+                )}
+
+                {/* Selection Checkbox — top-right */}
                 {onToggleSelect && (
                     <button
                         onClick={(e) => {
@@ -75,8 +98,8 @@ export default function ProductCard({
                     </button>
                 )}
 
-                {/* Badges */}
-                <div className="absolute top-3 left-3 z-10 flex flex-col gap-1.5 items-start">
+                {/* Badges — below the heart */}
+                <div className="absolute top-14 left-3 z-10 flex flex-col gap-1.5 items-start">
                     {isOneHourDelivery && (
                         <div className="bg-green-600 text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow-sm flex items-center gap-1 backdrop-blur-sm bg-opacity-95">
                             <Zap size={10} fill="currentColor" /> Same Day Delivery
@@ -143,10 +166,10 @@ export default function ProductCard({
                     <div className="flex flex-wrap gap-1 mb-2">
                         {allergyInfo && (
                             <span
-                                className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                                className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-300"
                                 title={allergyInfo}
                             >
-                                <ShieldAlert size={8} /> Allergy Info
+                                <ShieldAlert size={8} /> {allergyInfo.length > 30 ? allergyInfo.slice(0, 30) + '…' : allergyInfo}
                             </span>
                         )}
                         {sizeCount && sizeCount > 1 && (
@@ -169,7 +192,7 @@ export default function ProductCard({
                     href={productUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg transition-all"
+                    className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg transition-all"
                     style={{
                         backgroundColor: 'var(--edible-red)',
                         color: 'white',
@@ -194,24 +217,24 @@ export default function ProductCard({
                     </svg>
                 </a>
 
-                {/* Action row: Favorite + Write Message */}
-                <div className="flex items-center gap-1.5 mt-2">
-                    {onToggleFavorite && (
+                {/* Action row: Cart + Write Message */}
+                <div className="flex items-center gap-2 mt-3">
+                    {onAddToCart && (
                         <button
                             onClick={(e) => {
                                 e.preventDefault();
-                                onToggleFavorite();
+                                onAddToCart();
                             }}
-                            className={`flex items-center gap-1 text-[10px] font-medium px-2.5 py-1.5 rounded-lg border transition-all ${
-                                isFavorited
-                                    ? 'bg-red-50 border-red-200 text-red-600'
-                                    : 'bg-gray-50 border-gray-200 text-gray-500 hover:border-red-200 hover:text-red-500'
+                            className={`flex-1 flex items-center justify-center gap-1.5 text-[11px] font-semibold px-3 py-2 rounded-lg border transition-all ${
+                                isInCart
+                                    ? 'bg-green-50 border-green-200 text-green-600'
+                                    : 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100'
                             }`}
-                            title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                            aria-label={isFavorited ? 'Remove from favorites' : 'Save to favorites'}
+                            title={isInCart ? 'Already in cart' : 'Add to cart'}
+                            aria-label={isInCart ? 'Already in cart' : 'Add to cart'}
                         >
-                            <Heart size={10} fill={isFavorited ? 'currentColor' : 'none'} />
-                            {isFavorited ? 'Saved' : 'Save'}
+                            <ShoppingCart size={12} />
+                            {isInCart ? 'In Cart' : 'Add to Cart'}
                         </button>
                     )}
                     {onWriteMessage && (
@@ -220,11 +243,11 @@ export default function ProductCard({
                                 e.preventDefault();
                                 onWriteMessage();
                             }}
-                            className="flex items-center gap-1 text-[10px] font-medium px-2.5 py-1.5 rounded-lg border bg-gray-50 border-gray-200 text-gray-500 hover:border-purple-200 hover:text-purple-500 hover:bg-purple-50 transition-all"
+                            className="flex-1 flex items-center justify-center gap-1.5 text-[11px] font-semibold px-3 py-2 rounded-lg border bg-gray-50 border-gray-200 text-gray-500 hover:border-purple-200 hover:text-purple-500 hover:bg-purple-50 transition-all"
                             title="Write a gift message for this product"
                             aria-label="Write gift card message"
                         >
-                            <MessageSquareHeart size={10} />
+                            <MessageSquareHeart size={12} />
                             Write Card
                         </button>
                     )}

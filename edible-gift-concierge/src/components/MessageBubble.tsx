@@ -81,6 +81,19 @@ function parseContent(text: string): React.ReactNode[] {
  */
 function parseInline(line: string, keyPrefix: string): React.ReactNode[] {
     const nodes: React.ReactNode[] = [];
+
+    // Check for "Allergen Info:" line — render heading in red
+    const allergenMatch = line.match(/^(Allergen Info:)\s*(.*)$/);
+    if (allergenMatch) {
+        nodes.push(
+            <span key={`${keyPrefix}-allergen`}>
+                <span className="font-semibold" style={{ color: '#dc2626' }}>{allergenMatch[1]}</span>
+                {' '}{allergenMatch[2]}
+            </span>
+        );
+        return nodes;
+    }
+
     const parts = line.split(/(\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g);
 
     parts.forEach((part, partIdx) => {

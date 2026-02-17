@@ -1,13 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Product } from '@/lib/types';
-import { X, Trash2, Check, ExternalLink } from 'lucide-react';
-import Image from 'next/image';
+import { GiftContext } from '@/lib/types';
+import { X, Trash2, Check, ExternalLink, Sparkles, Loader2 } from 'lucide-react';
+import MessageBubble from './MessageBubble';
 
 interface ComparisonModalProps {
     isOpen: boolean;
     onClose: () => void;
     products: Product[];
     onRemoveProduct: (productId: string) => void;
+    giftContext?: GiftContext;
 }
 
 export function ComparisonModal({
@@ -15,8 +17,62 @@ export function ComparisonModal({
     onClose,
     products,
     onRemoveProduct,
+    giftContext,
 }: ComparisonModalProps) {
+    const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisError, setAnalysisError] = useState<string | null>(null);
+
     if (!isOpen) return null;
+
+    const handleAiCompare = async () => {
+        if (products.length < 2) return;
+
+        setIsAnalyzing(true);
+        setAnalysisError(null);
+        setAiAnalysis(null);
+
+        try {
+            const response = await fetch('/api/compare', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    products: products.map((p) => ({
+                        name: p.name,
+                        price: p.price,
+                        priceFormatted: p.priceFormatted,
+                        description: p.description,
+                        allergyInfo: p.allergyInfo,
+                        ingredients: p.ingredients,
+                        occasion: p.occasion,
+                        category: p.category,
+                        isOneHourDelivery: p.isOneHourDelivery,
+                        sizeCount: p.sizeCount,
+                    })),
+                    context: giftContext
+                        ? {
+                              recipient: giftContext.recipient,
+                              occasion: giftContext.occasion,
+                              budget: giftContext.budget,
+                              preferences: giftContext.preferences,
+                              dietaryNeeds: giftContext.dietaryNeeds,
+                          }
+                        : {},
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Comparison failed');
+            }
+
+            const data = await response.json();
+            setAiAnalysis(data.analysis);
+        } catch {
+            setAnalysisError('Failed to get AI comparison. Please try again.');
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in duration-200">
@@ -32,13 +88,29 @@ export function ComparisonModal({
                             Comparing {products.length} item{products.length !== 1 ? 's' : ''}
                         </p>
                     </div>
-                    <button
-                        onClick={onClose}
-                        className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
-                        aria-label="Close comparison"
-                    >
-                        <X size={24} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                        {products.length >= 2 && (
+                            <button
+                                onClick={handleAiCompare}
+                                disabled={isAnalyzing}
+                                className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-semibold rounded-lg hover:from-purple-700 hover:to-indigo-700 transition-all shadow-sm hover:shadow-md disabled:opacity-70 disabled:cursor-not-allowed"
+                            >
+                                {isAnalyzing ? (
+                                    <Loader2 size={16} className="animate-spin" />
+                                ) : (
+                                    <Sparkles size={16} />
+                                )}
+                                {isAnalyzing ? 'Analyzing...' : 'Compare using AI'}
+                            </button>
+                        )}
+                        <button
+                            onClick={onClose}
+                            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                            aria-label="Close comparison"
+                        >
+                            <X size={24} />
+                        </button>
+                    </div>
                 </div>
 
                 {/* Comparison Content */}
@@ -135,6 +207,35 @@ export function ComparisonModal({
                         </div>
                     )}
                 </div>
+
+                {/* AI Analysis Panel */}
+                {(aiAnalysis || isAnalyzing || analysisError) && (
+                    <div className="border-t border-gray-100 p-6 bg-gradient-to-b from-purple-50/50 to-white">
+                        <div className="flex items-center gap-2 mb-4">
+                            <Sparkles size={18} className="text-purple-600" />
+                            <h3 className="text-lg font-bold text-gray-900">AI Analysis</h3>
+                        </div>
+
+                        {isAnalyzing && (
+                            <div className="flex items-center gap-3 text-purple-600 py-8 justify-center">
+                                <Loader2 size={24} className="animate-spin" />
+                                <span className="text-sm font-medium">Analyzing products based on your preferences...</span>
+                            </div>
+                        )}
+
+                        {analysisError && (
+                            <div className="text-sm text-red-600 bg-red-50 px-4 py-3 rounded-lg border border-red-200">
+                                {analysisError}
+                            </div>
+                        )}
+
+                        {aiAnalysis && (
+                            <div className="prose prose-sm max-w-none">
+                                <MessageBubble role="assistant" content={aiAnalysis} />
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
