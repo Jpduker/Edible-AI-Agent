@@ -2,6 +2,37 @@ import { Product, SearchResult } from './types';
 
 const EDIBLE_BASE_URL = 'https://www.ediblearrangements.com';
 
+// ─── In-Memory Search Cache (TTL: 2 minutes) ───
+const CACHE_TTL_MS = 2 * 60 * 1000;
+const searchCache = new Map<string, { products: Product[]; timestamp: number }>();
+
+function getCacheKey(keyword: string, zipCode?: string): string {
+    return `${keyword.toLowerCase().trim()}|${zipCode || ''}`;
+}
+
+function getCachedResults(keyword: string, zipCode?: string): Product[] | null {
+    const key = getCacheKey(keyword, zipCode);
+    const entry = searchCache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+        searchCache.delete(key);
+        return null;
+    }
+    console.log(`[edible-api] Cache HIT for "${keyword}" (${entry.products.length} products)`);
+    return entry.products;
+}
+
+function setCacheResults(keyword: string, zipCode: string | undefined, products: Product[]): void {
+    const key = getCacheKey(keyword, zipCode);
+    searchCache.set(key, { products, timestamp: Date.now() });
+
+    // Evict old entries if cache grows too large (max 100 entries)
+    if (searchCache.size > 100) {
+        const oldest = searchCache.keys().next().value;
+        if (oldest) searchCache.delete(oldest);
+    }
+}
+
 function normalizeProduct(raw: SearchResult): Product {
 
 
@@ -33,6 +64,9 @@ function normalizeProduct(raw: SearchResult): Product {
         isOneHourDelivery: raw.isOneHourDelivery || false,
         promo: raw.promo || undefined,
         productImageTag: raw.productImageTag || undefined,
+        allergyInfo: raw.allergyinformation || undefined,
+        ingredients: raw.ingrediantNames || undefined,
+        sizeCount: raw.sizeCount || undefined,
     };
 }
 
@@ -70,6 +104,10 @@ export async function searchProducts(keyword: string, zipCode?: string): Promise
  * Used in API route handlers where the proxy isn't needed
  */
 export async function searchProductsServer(keyword: string, zipCode?: string): Promise<Product[]> {
+    // Check cache first
+    const cached = getCachedResults(keyword, zipCode);
+    if (cached) return cached;
+
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -98,9 +136,14 @@ export async function searchProductsServer(keyword: string, zipCode?: string): P
             return [];
         }
 
-        return data
+        const products = data
             .filter((item: SearchResult) => item.liveSku !== false)
             .map(normalizeProduct);
+
+        // Store in cache
+        setCacheResults(keyword, zipCode, products);
+
+        return products;
     } catch (error) {
         console.error('[edible-api-server] Error:', error);
         return [];

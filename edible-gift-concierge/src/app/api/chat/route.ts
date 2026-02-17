@@ -1,10 +1,30 @@
 import { anthropic } from '@ai-sdk/anthropic';
 import { streamText, tool, stepCountIs, convertToModelMessages } from 'ai';
+import type { ModelMessage } from 'ai';
 import { z } from 'zod';
-import { getSystemPrompt } from '@/lib/system-prompt';
+import { getSystemPrompt, SYSTEM_PROMPT_VERSION } from '@/lib/system-prompt';
 import { searchProductsServer } from '@/lib/edible-api';
+import { TOOL_DESCRIPTIONS, MAX_TOOL_STEPS, MAX_PRODUCTS_PER_SEARCH, MAX_PRODUCTS_PER_SIMILARITY } from '@/lib/tools';
 
 export const maxDuration = 60;
+
+// ─── Structured Logger ───
+function log(level: 'info' | 'warn' | 'error', event: string, data?: Record<string, unknown>) {
+    const entry = {
+        timestamp: new Date().toISOString(),
+        level,
+        event,
+        promptVersion: SYSTEM_PROMPT_VERSION,
+        ...data,
+    };
+    if (level === 'error') {
+        console.error(JSON.stringify(entry));
+    } else if (level === 'warn') {
+        console.warn(JSON.stringify(entry));
+    } else {
+        console.log(JSON.stringify(entry));
+    }
+}
 
 // Simple in-memory rate limiting
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
@@ -26,6 +46,38 @@ function checkRateLimit(ip: string): boolean {
 
     entry.count++;
     return true;
+}
+
+// ─── Conversation Window Management ───
+// Rough token estimation: ~4 chars per token
+// Keep conversations under ~80k tokens to leave room for system prompt + response
+const MAX_ESTIMATED_TOKENS = 80000;
+const CHARS_PER_TOKEN = 4;
+
+function estimateTokens(messages: ModelMessage[]): number {
+    return Math.ceil(
+        JSON.stringify(messages).length / CHARS_PER_TOKEN
+    );
+}
+
+function trimConversation(messages: ModelMessage[]): ModelMessage[] {
+    const estimated = estimateTokens(messages);
+    if (estimated <= MAX_ESTIMATED_TOKENS) return messages;
+
+    log('warn', 'conversation_trimmed', {
+        originalMessages: messages.length,
+        estimatedTokens: estimated,
+    });
+
+    // Keep the first message (initial user intent) and the last N messages
+    // Remove from the middle to preserve context bookends
+    const keepLast = Math.max(10, Math.floor(messages.length * 0.6));
+    const trimmed = [
+        messages[0],
+        ...messages.slice(-keepLast),
+    ];
+
+    return trimmed;
 }
 
 export async function POST(req: Request) {
@@ -52,14 +104,23 @@ export async function POST(req: Request) {
         // Convert UIMessages (parts-based) from v6 client to ModelMessages (content-based) for streamText
         const modelMessages = await convertToModelMessages(messages);
 
+        // Trim conversation if it's getting too long to prevent context window overflow
+        const trimmedMessages = trimConversation(modelMessages);
+
+        log('info', 'chat_request', {
+            ip,
+            messageCount: messages.length,
+            trimmedCount: trimmedMessages.length,
+            estimatedTokens: estimateTokens(trimmedMessages),
+        });
+
         const result = streamText({
             model: anthropic('claude-sonnet-4-20250514'),
             system: getSystemPrompt(),
-            messages: modelMessages,
+            messages: trimmedMessages,
             tools: {
                 search_products: tool({
-                    description:
-                        'Search the Edible Arrangements product catalog by keyword. Returns products with names, prices, descriptions, images, and direct product page URLs. Use this tool whenever you need to find or recommend products. You can call this tool multiple times with different keywords to get diverse results. NEVER recommend products without first searching for them using this tool. IMPORTANT: When the user specifies a budget, you MUST set maxPrice. When the user asks for premium/upscale options, you MUST set minPrice.',
+                    description: TOOL_DESCRIPTIONS.search_products,
                     inputSchema: z.object({
                         keyword: z
                             .string()
@@ -82,9 +143,15 @@ export async function POST(req: Request) {
                             .string()
                             .optional()
                             .describe('Recipient ZIP code for delivery availability check.'),
+                        deliveryFilter: z
+                            .enum(['delivery', 'pickup', 'any'])
+                            .optional()
+                            .describe(
+                                'Filter products by delivery type. Set to "delivery" when the user asks for delivery/shipping/same-day delivery options — this EXCLUDES in-store pickup only items. Set to "pickup" for in-store pickup only. Defaults to "any" (no filtering). ALWAYS set this to "delivery" when the user mentions delivery, shipping, or sending a gift to someone.'
+                            ),
                     }),
-                    execute: async ({ keyword, maxPrice, minPrice, zipCode }) => {
-                        console.log(`[Chat API] Tool call: search_products("${keyword}", maxPrice=${maxPrice}, minPrice=${minPrice}, zipCode=${zipCode})`);
+                    execute: async ({ keyword, maxPrice, minPrice, zipCode, deliveryFilter }) => {
+                        log('info', 'tool_call', { tool: 'search_products', keyword, maxPrice, minPrice, zipCode, deliveryFilter });
 
                         try {
                             let products = await searchProductsServer(keyword, zipCode);
@@ -97,17 +164,33 @@ export async function POST(req: Request) {
                                 products = products.filter((p) => p.price >= minPrice);
                             }
 
+                            // STRICT server-side delivery type filtering
+                            if (deliveryFilter === 'delivery') {
+                                // Exclude in-store pickup only products
+                                products = products.filter((p) => {
+                                    const tag = (p.productImageTag || '').toLowerCase();
+                                    return !tag.includes('in-store') && !tag.includes('pickup only');
+                                });
+                            } else if (deliveryFilter === 'pickup') {
+                                // Only show in-store pickup products
+                                products = products.filter((p) => {
+                                    const tag = (p.productImageTag || '').toLowerCase();
+                                    return tag.includes('in-store') || tag.includes('pickup');
+                                });
+                            }
+
                             if (products.length === 0) {
                                 const priceInfo = maxPrice ? ` under $${maxPrice}` : minPrice ? ` above $${minPrice}` : '';
+                                const deliveryInfo = deliveryFilter === 'delivery' ? ' with delivery available' : deliveryFilter === 'pickup' ? ' for in-store pickup' : '';
                                 return {
                                     success: false,
-                                    message: `No products found for "${keyword}"${priceInfo}. Try a different search term or adjust the price range.`,
+                                    message: `No products found for "${keyword}"${priceInfo}${deliveryInfo}. Try a different search term or adjust the filters.`,
                                     products: [],
-                                    appliedFilters: { maxPrice, minPrice },
+                                    appliedFilters: { maxPrice, minPrice, deliveryFilter },
                                 };
                             }
 
-                            const topProducts = products.slice(0, 15).map((p) => ({
+                            const topProducts = products.slice(0, MAX_PRODUCTS_PER_SEARCH).map((p) => ({
                                 id: p.id,
                                 name: p.name,
                                 price: p.price,
@@ -120,24 +203,22 @@ export async function POST(req: Request) {
                                 isOneHourDelivery: p.isOneHourDelivery,
                                 promo: p.promo,
                                 productImageTag: p.productImageTag,
+                                allergyInfo: p.allergyInfo,
+                                ingredients: p.ingredients,
+                                sizeCount: p.sizeCount,
                             }));
 
-                            console.log(
-                                `[Chat API] Returning ${topProducts.length} products for "${keyword}" (maxPrice=${maxPrice}, minPrice=${minPrice})`
-                            );
+                            log('info', 'tool_result', { tool: 'search_products', keyword, resultCount: topProducts.length, maxPrice, minPrice, deliveryFilter });
 
                             return {
                                 success: true,
                                 keyword,
                                 resultCount: products.length,
                                 products: topProducts,
-                                appliedFilters: { maxPrice, minPrice },
+                                appliedFilters: { maxPrice, minPrice, deliveryFilter },
                             };
                         } catch (error) {
-                            console.error(
-                                `[Chat API] Tool execution failed for "${keyword}":`,
-                                error
-                            );
+                            log('error', 'tool_error', { tool: 'search_products', keyword, error: String(error) });
                             return {
                                 success: false,
                                 message: `I had trouble searching for "${keyword}". The product catalog might be temporarily unavailable.`,
@@ -147,8 +228,7 @@ export async function POST(req: Request) {
                     },
                 }),
                 find_similar_products: tool({
-                    description:
-                        'Find products similar to one the user already likes. Use this when a user says they like a specific product but want alternatives, or asks for "something similar" or "more like this." Extracts key attributes and searches for comparable products. IMPORTANT: When the user asks for "premium" or "more upscale" versions, set minPrice to the original product\'s price. When the user says "under $X" or specifies a budget, set maxPrice to X.',
+                    description: TOOL_DESCRIPTIONS.find_similar_products,
                     inputSchema: z.object({
                         productName: z
                             .string()
@@ -176,11 +256,15 @@ export async function POST(req: Request) {
                             .string()
                             .optional()
                             .describe('Recipient ZIP code for delivery availability check.'),
+                        deliveryFilter: z
+                            .enum(['delivery', 'pickup', 'any'])
+                            .optional()
+                            .describe(
+                                'Filter by delivery type. Set to "delivery" to exclude in-store pickup only items. Set to "pickup" for in-store only. Defaults to "any".'
+                            ),
                     }),
-                    execute: async ({ productName, attributes, maxPrice, minPrice, zipCode }) => {
-                        console.log(
-                            `[Chat API] Tool call: find_similar_products("${productName}", "${attributes}", maxPrice=${maxPrice}, minPrice=${minPrice}, zipCode=${zipCode})`
-                        );
+                    execute: async ({ productName, attributes, maxPrice, minPrice, zipCode, deliveryFilter }) => {
+                        log('info', 'tool_call', { tool: 'find_similar_products', productName, attributes, maxPrice, minPrice, zipCode, deliveryFilter });
 
                         try {
                             // Run two parallel searches for diverse results
@@ -214,18 +298,32 @@ export async function POST(req: Request) {
                                 merged = merged.filter((p) => p.price >= minPrice);
                             }
 
+                            // STRICT server-side delivery type filtering
+                            if (deliveryFilter === 'delivery') {
+                                merged = merged.filter((p) => {
+                                    const tag = (p.productImageTag || '').toLowerCase();
+                                    return !tag.includes('in-store') && !tag.includes('pickup only');
+                                });
+                            } else if (deliveryFilter === 'pickup') {
+                                merged = merged.filter((p) => {
+                                    const tag = (p.productImageTag || '').toLowerCase();
+                                    return tag.includes('in-store') || tag.includes('pickup');
+                                });
+                            }
+
                             if (merged.length === 0) {
                                 const priceInfo = maxPrice ? ` under $${maxPrice}` : minPrice ? ` above $${minPrice}` : '';
+                                const deliveryInfo = deliveryFilter === 'delivery' ? ' with delivery available' : deliveryFilter === 'pickup' ? ' for in-store pickup' : '';
                                 return {
                                     success: false,
-                                    message: `I couldn't find similar products to "${productName}"${priceInfo}. Let me try a different search approach.`,
+                                    message: `I couldn't find similar products to "${productName}"${priceInfo}${deliveryInfo}. Let me try a different search approach.`,
                                     originalProduct: productName,
                                     products: [],
-                                    appliedFilters: { maxPrice, minPrice },
+                                    appliedFilters: { maxPrice, minPrice, deliveryFilter },
                                 };
                             }
 
-                            const topProducts = merged.slice(0, 10).map((p) => ({
+                            const topProducts = merged.slice(0, MAX_PRODUCTS_PER_SIMILARITY).map((p) => ({
                                 id: p.id,
                                 name: p.name,
                                 price: p.price,
@@ -238,11 +336,12 @@ export async function POST(req: Request) {
                                 isOneHourDelivery: p.isOneHourDelivery,
                                 promo: p.promo,
                                 productImageTag: p.productImageTag,
+                                allergyInfo: p.allergyInfo,
+                                ingredients: p.ingredients,
+                                sizeCount: p.sizeCount,
                             }));
 
-                            console.log(
-                                `[Chat API] Returning ${topProducts.length} similar products for "${productName}" (maxPrice=${maxPrice}, minPrice=${minPrice})`
-                            );
+                            log('info', 'tool_result', { tool: 'find_similar_products', productName, resultCount: topProducts.length, maxPrice, minPrice, deliveryFilter });
 
                             return {
                                 success: true,
@@ -250,13 +349,10 @@ export async function POST(req: Request) {
                                 searchedAttributes: attributes,
                                 resultCount: merged.length,
                                 products: topProducts,
-                                appliedFilters: { maxPrice, minPrice },
+                                appliedFilters: { maxPrice, minPrice, deliveryFilter },
                             };
                         } catch (error) {
-                            console.error(
-                                `[Chat API] Similarity search failed for "${productName}":`,
-                                error
-                            );
+                            log('error', 'tool_error', { tool: 'find_similar_products', productName, error: String(error) });
                             return {
                                 success: false,
                                 message: `I had trouble finding similar products. Let me try a regular search instead.`,
@@ -267,12 +363,35 @@ export async function POST(req: Request) {
                     },
                 }),
             },
-            stopWhen: stepCountIs(5),
+            stopWhen: stepCountIs(MAX_TOOL_STEPS),
+            onFinish({ text, steps, finishReason }) {
+                // ─── Response Validation ───
+                // Log quality signals for observability
+                const hasQuickReplies = /\[\[.+\]\]\s*$/.test(text);
+                const hasProductMention = /\*\*.+\*\*\s*—?\s*\$[\d.]+/.test(text);
+                const wordCount = text.split(/\s+/).length;
+                const toolCallCount = steps?.reduce(
+                    (acc, s) => acc + (s.toolCalls?.length ?? 0), 0
+                ) ?? 0;
+
+                if (!hasQuickReplies && wordCount > 20) {
+                    log('warn', 'missing_quick_replies', { finishReason, wordCount });
+                }
+
+                log('info', 'response_complete', {
+                    finishReason,
+                    wordCount,
+                    toolCallCount,
+                    hasQuickReplies,
+                    hasProductMention,
+                    steps: steps?.length ?? 0,
+                });
+            },
         });
 
         return result.toUIMessageStreamResponse();
     } catch (error) {
-        console.error('[Chat API] Unexpected error:', error);
+        log('error', 'unhandled_error', { error: String(error) });
 
         return new Response(
             JSON.stringify({

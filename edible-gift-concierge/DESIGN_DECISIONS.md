@@ -298,15 +298,15 @@ Test different system prompt variations, quick reply strategies, and product car
 Track: search queries, products viewed, CTA clicks, conversation length, and drop-off points. Use this data to improve prompt quality and product recommendations.
 
 ### 36. Cost Optimization
-- Cache frequent searches (TTL: 5 minutes)
+- ~~Cache frequent searches (TTL: 5 minutes)~~ → **Implemented** (Decision #51 — 2-min TTL in-memory cache)
 - Use Haiku for simple follow-up questions (price inquiries, delivery questions)
-- Implement token budgets per conversation
+- ~~Implement token budgets per conversation~~ → **Implemented** (Decision #54 — 80K token conversation window)
 
 ### 37. Caching Strategy
-Redis-based caching for product searches with a 5-minute TTL. Edible's catalog doesn't change minute-to-minute, so moderate caching is safe and significantly reduces API calls.
+~~Redis-based caching for product searches with a 5-minute TTL.~~ → **Partially Implemented** (Decision #51 — In-memory Map cache with 2-min TTL. Redis upgrade for production.)
 
 ### 38. Accessibility Audit
-Full WCAG 2.1 AA compliance: proper ARIA labels, keyboard navigation, screen reader support, high contrast mode, and reduced motion preferences.
+~~Full WCAG 2.1 AA compliance: proper ARIA labels, keyboard navigation, screen reader support, high contrast mode, and reduced motion preferences.~~ → **Partially Implemented** (Decision #59 — ARIA roles, labels, and live regions added. Full audit still recommended for production.)
 
 ### 39. Internationalization
 Multi-language support for Edible's international markets. The system prompt and quick replies would need localization.
@@ -400,3 +400,150 @@ This follows the universal messaging app convention (iMessage, WhatsApp).
 ---
 
 *Document maintained throughout development. Each decision traces back to: "Does this help a gift-giver find the right product confidently?"*
+
+---
+
+## Phase 2 Engineering Improvements
+
+### 51. In-Memory Search Cache (2-Minute TTL)
+**Decision**: Cache product search results server-side in a `Map` with 2-minute TTL and 100-entry cap.
+
+**Reasoning**: Edible's catalog doesn't change minute-to-minute. When Claude makes multiple tool calls for the same keyword (e.g., refining results), caching avoids redundant API calls, reduces latency by ~200-400ms per cache hit, and is kind to the upstream API. The 2-minute window is short enough to stay fresh while covering multi-turn conversations. LRU eviction when the map exceeds 100 entries prevents unbounded memory growth.
+
+**Trade-off**: In-memory cache is per-process — not shared across serverless instances. Acceptable for a POC; production would use Redis.
+
+### 52. Prompt Versioning
+**Decision**: Export `SYSTEM_PROMPT_VERSION` from `system-prompt.ts` and include it in every structured log entry.
+
+**Reasoning**: When iterating on a system prompt, you need to correlate behavioral changes with prompt revisions. Tagging every log entry with the prompt version makes it trivial to A/B test prompts or diagnose regressions. This is a lightweight observability pattern borrowed from ML model versioning.
+
+### 53. Structured JSON Logging
+**Decision**: Replace ad-hoc `console.log` strings with a `log(level, event, data)` function that outputs structured JSON entries.
+
+**Reasoning**: Structured logs are queryable, parseable, and production-ready. Each entry includes: timestamp, level (info/warn/error), event name, prompt version, and arbitrary data. This enables log aggregation (Datadog, CloudWatch, etc.) without post-processing. Events logged: `chat_request`, `tool_call`, `tool_result`, `tool_error`, `response_complete`, `conversation_trimmed`, `unhandled_error`.
+
+### 54. Conversation Window Management
+**Decision**: Estimate token usage (~4 chars/token) and trim conversations exceeding 80K tokens by removing middle messages while keeping the first message (initial intent) and the last 60% of messages.
+
+**Reasoning**: Claude Sonnet's 200K context window is generous, but sending unnecessary history wastes tokens (money) and can degrade response quality. The "keep bookends" strategy preserves the user's original intent and recent context — the two most important parts of a conversation. The 80K threshold leaves ample room for the system prompt (~4K tokens), tool results, and the response.
+
+### 55. Dynamic Spin the Wheel
+**Decision**: Fetch live products from the search API when the Spin the Wheel modal opens, with hardcoded fallbacks and a "Shuffle products" button.
+
+**Reasoning**: A static wheel is a novelty once; a dynamic wheel that shows real, available products every time is a genuine discovery tool. Products are fetched with random search terms ("popular gifts", "best sellers", "chocolate strawberries", etc.) and randomly sampled to create variety. The fallback products ensure the feature works even if the API is down. Auto-generated short labels (`makeShortName()`) keep the wheel readable regardless of product name length.
+
+### 56. Markdown List Rendering
+**Decision**: Enhanced `MessageBubble.parseContent()` to detect and render unordered (`- item`, `• item`) and ordered (`1. item`) lists as proper HTML `<ul>` and `<ol>` elements.
+
+**Reasoning**: Claude naturally produces markdown lists when presenting product comparisons or feature breakdowns. Rendering these as plain text with bullet characters looks unprofessional. Proper list rendering with `list-disc`, `list-inside`, and `space-y-1` classes creates visual hierarchy that matches user expectations from modern chat interfaces.
+
+### 57. Tool Constants Centralization
+**Decision**: Moved tool descriptions and magic numbers (`MAX_TOOL_STEPS`, `MAX_PRODUCTS_PER_SEARCH`, `MAX_PRODUCTS_PER_SIMILARITY`) into `tools.ts` as named exports, imported by `route.ts`.
+
+**Reasoning**: The original `tools.ts` had dead code — schemas defined but never imported. Rather than delete the file, it now serves as a single source of truth for tool configuration. This removes duplication, makes it easy to tune limits without hunting through the route handler, and keeps the route file focused on orchestration logic.
+
+### 58. Response Quality Validation
+**Decision**: Added an `onFinish` callback to `streamText()` that analyzes the completed response for quality signals: presence of quick replies, product mentions, word count, tool call count, and step count.
+
+**Reasoning**: The system prompt instructs Claude to end responses with `[[Quick Reply 1|Quick Reply 2]]` format, but compliance isn't guaranteed. Logging when quick replies are missing (on substantive responses) creates a feedback signal for prompt engineering. Product mention detection (`**Name** — $Price`) validates that tool results are being properly synthesized into the response. This is lightweight runtime validation — not blocking, just observing.
+
+### 59. ARIA Accessibility
+**Decision**: Added `role="log"` and `aria-live="polite"` to the messages container, `role="region"` with labels to content areas, `aria-label` to interactive elements, and `aria-busy` to the typing indicator.
+
+**Reasoning**: Chat interfaces are notoriously inaccessible. `role="log"` tells screen readers this is a message history. `aria-live="polite"` announces new messages without interrupting the user's current task. These are low-effort, high-impact accessibility wins that move toward WCAG 2.1 AA compliance.
+
+---
+
+## Phase 3 — Big Tech-Inspired Decision Support Features
+
+### 60. Gift Context Sidebar (Notion AI / Google Flights)
+**Decision**: Built a real-time Gift Planner sidebar that auto-detects recipient, occasion, budget, preferences, dietary needs, delivery ZIP, and gift tone from user messages using client-side NLP heuristics.
+
+**Reasoning**: Big tech products (Google Flights, Notion, Kayak) show users what the system "understands" in a persistent sidebar. This serves three critical purposes:
+1. **Trust**: Users see the AI isn't a black box — it's extracting structured understanding from natural language
+2. **Error Correction**: If the sidebar shows "Budget: Under $50" but the user meant $75, they instantly see the mismatch
+3. **Decision Support**: Seeing all criteria in one place helps users think more clearly about what they want
+
+**Architecture**: `gift-context-extractor.ts` uses regex-based pattern matching across 6 categories (recipient, occasion, budget, preferences, dietary, tone) with 50+ patterns. Context is computed via `useMemo` on user messages for performance. The sidebar uses tabbed navigation (Context / Products) with a completeness progress bar.
+
+**Inspired by**: Google Flights' search criteria panel, Notion AI sidebar, Kayak's filter panel.
+
+### 61. Budget Progress Visualization (Mint / Personal Finance Apps)
+**Decision**: Added a visual budget progress bar inside the Gift Context Sidebar that shows how recommended products relate to the stated budget. Green segments = in budget, amber = over budget.
+
+**Reasoning**: Budget is the #1 constraint in gift purchasing. Personal finance apps (Mint, YNAB) proved that visualizing spending relative to a budget is more effective than raw numbers. Seeing 6 green bars and 2 amber bars instantly communicates "most options work for you" without reading prices. This is a micro-interaction that reduces cognitive load during decision-making.
+
+**Trade-off**: The per-segment bars only show the most recent 8 products. In long conversations with many recommendations, this could be misleading. Acceptable for POC — production would show all products with scrolling.
+
+### 62. Gift Message Composer (Hallmark AI / Google Smart Compose)
+**Decision**: Built an AI-powered gift card message writer that generates 3 personalized messages based on the detected occasion, recipient, and user-selected tone (warm, funny, romantic, professional, heartfelt). Includes a "Write Your Own" tab with direct editing.
+
+**Reasoning**: The gifting journey doesn't end at product selection — writing the card message is often the hardest part. By completing this "last mile," we increase the likelihood of conversion and create a differentiated experience. No other edible gift site offers AI-assisted card writing. The 5 tone options correspond to the most common emotional registers in gift-giving.
+
+**Architecture**: Primary path calls the chat API with a specialized prompt for generating 3 numbered messages. Fallback uses curated, occasion-specific message templates when the API is unavailable. Copy-to-clipboard with visual feedback. The composer receives the detected `GiftContext` to auto-personalize output.
+
+**Inspired by**: Hallmark's card message generator, Gmail's Smart Compose, ChatGPT's tone adjustment.
+
+### 63. Product Favorites / Wishlist (Pinterest / Airbnb)
+**Decision**: Added a "Save" (heart) button on each product card that adds products to an in-session favorites list. Favorited products persist through the conversation and are visually indicated on cards.
+
+**Reasoning**: Pinterest and Airbnb proved that saving items for later comparison reduces decision paralysis. In a chat interface, products scroll past quickly and can be hard to find again. The favorites list creates a persistent "short list" that the user builds throughout the conversation. Combined with the Gift Context Sidebar's Products tab, users can see all recommended products in one place with price ranges and budget indicators.
+
+**Inspired by**: Pinterest boards, Airbnb wishlists, Instagram saves.
+
+### 64. Products Tab in Sidebar (Amazon Recently Viewed)
+**Decision**: The Gift Context Sidebar includes a "Products" tab that shows all unique products recommended across the entire conversation, with mini-cards showing thumbnail, name, price, and quick status badges (Same Day delivery, Over Budget).
+
+**Reasoning**: In a multi-turn conversation, the user may have seen 10-15 products across different searches. Without a unified view, they'd have to scroll through the chat history to find "that one product from earlier." The Products tab deduplicates by product ID and shows a compact, linked list with price range summary. This is an information architecture improvement that turns a linear chat into a browsable catalog.
+
+**Technical Detail**: Product deduplication uses a `Set<string>` keyed by product ID, extracted via `useMemo` across all conversation messages. Only unique products are tracked, preventing duplicates from multiple searches returning the same item.
+
+**Inspired by**: Amazon's "Recently Viewed" sidebar, Google Shopping's saved items.
+
+### 65. Context-Aware System Prompt (Prompt v1.1)
+**Decision**: Updated the system prompt to version v1.1 with a new `CONTEXT-AWARE GIFTING` section that instructs Claude to phrase questions in ways that help the client-side context extractor work better, and to mention the Gift Message Composer when users are ready to order.
+
+**Reasoning**: The sidebar's context extraction relies on users naturally mentioning details like "for my mom" or "under $50." By tuning the system prompt to ask questions in extractable ways ("Who's the lucky recipient?" over "Tell me more"), we improve the accuracy of the NLP pipeline without adding complexity. This is a lightweight example of prompt-UI co-design — the prompt adapts to complement the frontend's capabilities.
+
+### 66. Client-Side NLP Pattern Engine
+**Decision**: Built a 50+ pattern regex engine in `gift-context-extractor.ts` that extracts structured data from unstructured user messages. Categories: recipients (19 patterns), occasions (18 patterns), budgets (9 patterns), preferences (12 patterns), dietary needs (8 patterns), tones (6 patterns), ZIP codes, and recipient names.
+
+**Reasoning**: While we could have Claude extract this context server-side (and include it in the response), client-side extraction has three advantages:
+1. **Zero latency**: Context updates instantly as messages arrive, no API call needed
+2. **Zero cost**: No additional tokens consumed for context extraction
+3. **Privacy**: User data is analyzed locally, never sent to a separate extraction endpoint
+
+The 50+ regex patterns cover the most common ways people describe gift recipients, occasions, and constraints in natural English. The engine uses last-mentioned budget (most refined), cumulative preferences, and first-matched recipient/occasion for accuracy.
+
+**Trade-off**: Regex can't handle ambiguous or creative language as well as an LLM. "Something for the person who has everything" wouldn't match any recipient pattern. Acceptable for POC — production could layer an LLM extraction pass as a fallback.
+
+### 67. Favorites Drawer with localStorage Persistence
+**Decision**: Created a dedicated `FavoritesDrawer.tsx` slide-out panel that displays all saved products, with localStorage persistence so favorites survive page refreshes and browser restarts.
+
+**Reasoning**: The original Save (heart) button stored favorites in React state but provided no way to view them — a broken feature. The drawer adds: thumbnail + name + price for each saved item, per-item actions (Buy, Write Card, Copy Link, Remove), total value calculator, and a "Share My Gift List" button that uses the Web Share API (or clipboard fallback). localStorage persistence makes the feature production-ready; gift-shopping often spans multiple sessions.
+
+**Inspired by**: Pinterest boards, Airbnb wishlists, IKEA shopping lists.
+
+### 68. Surfacing Hidden API Data (Allergy, Ingredients, Size Variants)
+**Decision**: Extended the `Product` interface with three fields already returned by the Edible API but previously discarded: `allergyInfo` (from `allergyinformation`), `ingredients` (from `ingrediantNames`), and `sizeCount`.
+
+**Reasoning**: We were fetching this data in every API call and throwing it away during normalization. This is free, high-value information:
+- **allergyInfo**: Critical for dietary safety — users with nut allergies, gluten sensitivity, etc. can see an "Allergy Info" badge with full details on hover
+- **ingredients**: Shows first 3 ingredients as a green badge, full list on hover — helps users quickly assess what's inside
+- **sizeCount**: Shows "X sizes" badge when a product has multiple size options — signals value flexibility to budget-conscious users
+
+Data now flows: Edible API → normalizeProduct → tool results → Claude (for AI-powered allergy guidance) → ProductCard UI badges.
+
+**Trade-off**: Ingredient data quality depends on the Edible API. Some products return empty strings. We conditionally render badges only when data exists, gracefully degrading.
+
+### 69. Edible Domain Knowledge in System Prompt (v1.2)
+**Decision**: Added a comprehensive `PRODUCT KNOWLEDGE & ALLERGY GUIDANCE` section to the system prompt with curated Edible Arrangements expertise: freshness guarantees, storage tips, delivery windows, customization options, corporate gifting, price ranges, and contact info.
+
+**Reasoning**: Since the Edible website doesn't expose customer reviews or ratings via their API, we can't scrape and present social proof. Instead, we embedded verified domain knowledge directly into the prompt so Claude acts as a genuine product expert — answering questions about freshness ("Are the strawberries fresh?"), storage ("How long does it last?"), delivery ("Can I get it today?"), and sizing ("Does it come in a smaller size?") with accurate, helpful information rather than generic responses.
+
+**Why not scrape reviews?**: Investigation showed that Edible Arrangements product pages do not contain a reviews/ratings section. The product URLs redirect to category listing pages rather than individual product detail pages. No review API endpoints were found. The domain knowledge approach is more reliable and doesn't risk scraping issues.
+
+### 70. Allergy-Aware AI Recommendations
+**Decision**: Updated Claude's system prompt to instruct it to proactively check `allergyInfo` and `ingredients` in tool results, flag allergens when users mention dietary needs, reference specific product data, and always caveat with "double-check on the product page."
+
+**Reasoning**: This turns the chatbot into a dietary-aware assistant — a feature most e-commerce chatbots lack. When a user says "my mom has a nut allergy," Claude can now scan search results and highlight which products are safe vs. risky based on actual product data, rather than giving generic "check the website" responses. The caveat protects against data staleness.

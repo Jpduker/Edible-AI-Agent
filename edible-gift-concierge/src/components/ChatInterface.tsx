@@ -1,10 +1,11 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { UIMessage } from 'ai';
 import { DefaultChatTransport } from 'ai';
-import { Product } from '@/lib/types'; // Import shared type
+import { Product } from '@/lib/types';
+import { extractGiftContext } from '@/lib/gift-context-extractor';
 import MessageBubble from './MessageBubble';
 import ProductCard from './ProductCard';
 import QuickReplies from './QuickReplies';
@@ -12,6 +13,11 @@ import TypingIndicator from './TypingIndicator';
 import WelcomeScreen from './WelcomeScreen';
 import ComparisonBar from './ComparisonBar';
 import { ComparisonModal } from './ComparisonModal';
+import { SpinWheelModal } from './SpinWheelModal';
+import GiftContextSidebar from './GiftContextSidebar';
+import { GiftMessageComposer } from './GiftMessageComposer';
+import FavoritesDrawer from './FavoritesDrawer';
+import { Sparkles, PanelRightOpen, Heart } from 'lucide-react';
 
 /**
  * Parse quick replies from the end of AI messages.
@@ -72,10 +78,30 @@ export default function ChatInterface() {
     const inputRef = useRef<HTMLInputElement>(null);
     const [input, setInput] = useState('');
     const [currentQuickReplies, setCurrentQuickReplies] = useState<string[]>([]);
+    const [isSpinWheelOpen, setIsSpinWheelOpen] = useState(false);
 
     // Comparison State
     const [selectedProducts, setSelectedProducts] = useState<Product[]>([]);
     const [isComparisonOpen, setIsComparisonOpen] = useState(false);
+
+    // Gift Context Sidebar State
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+    // Gift Message Composer State
+    const [isComposerOpen, setIsComposerOpen] = useState(false);
+    const [composerProduct, setComposerProduct] = useState<Product | null>(null);
+
+    // Favorites State (persisted to localStorage)
+    const [favoriteProducts, setFavoriteProducts] = useState<Product[]>(() => {
+        if (typeof window === 'undefined') return [];
+        try {
+            const saved = localStorage.getItem('edible-favorites');
+            return saved ? JSON.parse(saved) : [];
+        } catch {
+            return [];
+        }
+    });
+    const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
 
     const { messages, sendMessage, status, error } = useChat({
         transport: new DefaultChatTransport({ api: '/api/chat' }),
@@ -92,6 +118,30 @@ export default function ChatInterface() {
     });
 
     const isLoading = status === 'submitted' || status === 'streaming';
+
+    // ─── Gift Context: auto-extract from user messages ───
+    const giftContext = useMemo(() => {
+        const userTexts = messages
+            .filter((m) => m.role === 'user')
+            .map((m) => getMessageText(m))
+            .filter(Boolean);
+        return extractGiftContext(userTexts);
+    }, [messages]);
+
+    // ─── Recommended Products: collect all products from conversation ───
+    const allRecommendedProducts = useMemo(() => {
+        const seen = new Set<string>();
+        const products: Product[] = [];
+        for (const msg of messages) {
+            for (const p of extractProducts(msg)) {
+                if (!seen.has(p.id)) {
+                    seen.add(p.id);
+                    products.push(p);
+                }
+            }
+        }
+        return products;
+    }, [messages]);
 
     // Auto-scroll to bottom when new messages arrive
     const scrollToBottom = useCallback(() => {
@@ -150,20 +200,71 @@ export default function ChatInterface() {
             setSelectedProducts((prev) => prev.filter((p) => p.id !== product.id));
         } else {
             if (selectedProducts.length >= 3) {
-                // Ideally show toast, but silent limit for now to match simplicity requirement
                 return;
             }
             setSelectedProducts((prev) => [...prev, product]);
         }
     };
 
+    const toggleFavorite = useCallback((product: Product) => {
+        setFavoriteProducts((prev) => {
+            let next: Product[];
+            if (prev.find((p) => p.id === product.id)) {
+                next = prev.filter((p) => p.id !== product.id);
+            } else {
+                next = [...prev, product];
+            }
+            try { localStorage.setItem('edible-favorites', JSON.stringify(next)); } catch { /* quota */ }
+            return next;
+        });
+    }, []);
+
+    const openComposer = useCallback((product: Product) => {
+        setComposerProduct(product);
+        setIsComposerOpen(true);
+    }, []);
+
     const hasMessages = messages.length > 0;
 
     return (
         <div className="flex flex-col h-full relative">
+            {/* Header Buttons */}
+            <div className="absolute top-4 right-4 z-40 flex items-center gap-2">
+                <button
+                    onClick={() => setIsFavoritesOpen(true)}
+                    className="relative bg-white/80 backdrop-blur-sm shadow-sm border border-red-100 text-red-500 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-red-50 transition-all hover:scale-105"
+                    aria-label={`Open saved items (${favoriteProducts.length})`}
+                >
+                    <Heart size={14} fill={favoriteProducts.length > 0 ? 'currentColor' : 'none'} />
+                    Saved
+                    {favoriteProducts.length > 0 && (
+                        <span className="bg-red-500 text-white text-[10px] font-bold w-4.5 h-4.5 min-w-[18px] rounded-full flex items-center justify-center">
+                            {favoriteProducts.length}
+                        </span>
+                    )}
+                </button>
+                <button
+                    onClick={() => setIsSidebarOpen(true)}
+                    className="bg-white/80 backdrop-blur-sm shadow-sm border border-blue-100 text-blue-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-blue-50 transition-all hover:scale-105"
+                    aria-label="Open gift planner sidebar"
+                >
+                    <PanelRightOpen size={14} /> Gift Planner
+                    {(giftContext.recipient || giftContext.occasion || giftContext.budget) && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                    )}
+                </button>
+                <button
+                    onClick={() => setIsSpinWheelOpen(true)}
+                    aria-label="Open Spin the Wheel to discover products"
+                    className="bg-white/80 backdrop-blur-sm shadow-sm border border-orange-100 text-orange-600 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 hover:bg-orange-50 transition-all hover:scale-105"
+                >
+                    <Sparkles size={14} /> Spin & Win
+                </button>
+            </div>
+
             {/* Messages area */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar pb-20">
-                <div className="max-w-3xl mx-auto px-4 py-4">
+            <div className="flex-1 overflow-y-auto custom-scrollbar pb-20" role="log" aria-live="polite" aria-label="Chat messages">
+                <div className="max-w-3xl mx-auto px-4 py-4" role="region" aria-label="Conversation">
                     {!hasMessages ? (
                         <WelcomeScreen onQuickReply={handleQuickReply} />
                     ) : (
@@ -189,11 +290,12 @@ export default function ChatInterface() {
                                             <div className="pl-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 animate-fade-in-up">
                                                 {products.slice(0, 6).map((product, idx) => {
                                                     const isSelected = !!selectedProducts.find(p => p.id === product.id);
+                                                    const isFav = !!favoriteProducts.find(p => p.id === product.id);
                                                     return (
                                                         <ProductCard
                                                             key={`${product.id}-${idx}`}
                                                             name={product.name}
-                                                            price={product.priceFormatted} // Use formatted price
+                                                            price={product.priceFormatted}
                                                             description={
                                                                 product.description.length > 120
                                                                     ? product.description.slice(0, 120) + '...'
@@ -206,6 +308,12 @@ export default function ChatInterface() {
                                                             productImageTag={product.productImageTag}
                                                             isSelected={isSelected}
                                                             onToggleSelect={() => toggleProductSelection(product)}
+                                                            onWriteMessage={() => openComposer(product)}
+                                                            onToggleFavorite={() => toggleFavorite(product)}
+                                                            isFavorited={isFav}
+                                                            allergyInfo={product.allergyInfo}
+                                                            ingredients={product.ingredients}
+                                                            sizeCount={product.sizeCount}
                                                         />
                                                     );
                                                 })}
@@ -215,7 +323,7 @@ export default function ChatInterface() {
                                 );
                             })}
 
-                            {isLoading && <TypingIndicator />}
+                            {isLoading && <TypingIndicator aria-busy="true" />}
 
                             {error && (
                                 <div className="flex items-start gap-2 animate-fade-in">
@@ -253,6 +361,42 @@ export default function ChatInterface() {
                 onRemoveProduct={(id) => setSelectedProducts(prev => prev.filter(p => p.id !== id))}
             />
 
+            <SpinWheelModal
+                isOpen={isSpinWheelOpen}
+                onClose={() => setIsSpinWheelOpen(false)}
+            />
+
+            {/* Gift Context Sidebar */}
+            <GiftContextSidebar
+                context={giftContext}
+                isOpen={isSidebarOpen}
+                onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+                recommendedProducts={allRecommendedProducts}
+            />
+
+            {/* Gift Message Composer */}
+            <GiftMessageComposer
+                isOpen={isComposerOpen}
+                onClose={() => {
+                    setIsComposerOpen(false);
+                    setComposerProduct(null);
+                }}
+                product={composerProduct}
+                context={giftContext}
+            />
+
+            {/* Favorites Drawer */}
+            <FavoritesDrawer
+                isOpen={isFavoritesOpen}
+                onClose={() => setIsFavoritesOpen(false)}
+                favorites={favoriteProducts}
+                onRemove={(product) => toggleFavorite(product)}
+                onWriteMessage={(product) => {
+                    setIsFavoritesOpen(false);
+                    openComposer(product);
+                }}
+            />
+
             {/* Quick replies + Input area */}
             <div
                 className="border-t shrink-0 relative z-30"
@@ -266,7 +410,7 @@ export default function ChatInterface() {
                         <QuickReplies replies={currentQuickReplies} onSelect={handleQuickReply} />
                     )}
 
-                    <form onSubmit={handleFormSubmit} className="flex items-center gap-2">
+                    <form onSubmit={handleFormSubmit} className="flex items-center gap-2" role="form" aria-label="Chat input">
                         <input
                             ref={inputRef}
                             type="text"

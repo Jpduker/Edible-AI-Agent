@@ -40,7 +40,7 @@ async function main() {
 
     // 3. Check ZIP code passing
     console.log('\nSearching "birthday" with ZIP 10001...');
-    const zipResults = await searchProductsServer('birthday', undefined, undefined, '10001');
+    const zipResults = await searchProductsServer('birthday', '10001');
     if (zipResults.length > 0) {
         // Compare with first search - difficult unless API changes based on ZIP
         // Just log first result to see if anything is different or if it worked

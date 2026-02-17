@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Check, Star, Zap } from 'lucide-react';
+import { Check, Star, Zap, MessageSquareHeart, Heart, ShieldAlert, Layers } from 'lucide-react';
 
 interface ProductCardProps {
     name: string;
@@ -14,6 +14,12 @@ interface ProductCardProps {
     productImageTag?: string;
     onToggleSelect?: () => void;
     isSelected?: boolean;
+    onWriteMessage?: () => void;
+    onToggleFavorite?: () => void;
+    isFavorited?: boolean;
+    allergyInfo?: string;
+    ingredients?: string;
+    sizeCount?: number;
 }
 
 export default function ProductCard({
@@ -27,6 +33,12 @@ export default function ProductCard({
     productImageTag,
     onToggleSelect,
     isSelected = false,
+    onWriteMessage,
+    onToggleFavorite,
+    isFavorited = false,
+    allergyInfo,
+    ingredients,
+    sizeCount,
 }: ProductCardProps) {
     const [imageError, setImageError] = useState(false);
     const [imageLoaded, setImageLoaded] = useState(false);
@@ -120,11 +132,38 @@ export default function ProductCard({
                 </div>
 
                 <p
-                    className="text-xs leading-relaxed line-clamp-2 mb-3"
+                    className="text-xs leading-relaxed line-clamp-2 mb-2"
                     style={{ color: 'var(--edible-muted)' }}
                 >
                     {description}
                 </p>
+
+                {/* Allergy, Ingredients & Size Badges */}
+                {(allergyInfo || (sizeCount && sizeCount > 1) || ingredients) && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                        {allergyInfo && (
+                            <span
+                                className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                                title={allergyInfo}
+                            >
+                                <ShieldAlert size={8} /> Allergy Info
+                            </span>
+                        )}
+                        {sizeCount && sizeCount > 1 && (
+                            <span className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200">
+                                <Layers size={8} /> {sizeCount} sizes
+                            </span>
+                        )}
+                        {ingredients && (
+                            <span
+                                className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 truncate max-w-[140px]"
+                                title={ingredients}
+                            >
+                                {ingredients.split(',').slice(0, 3).join(', ')}{ingredients.split(',').length > 3 ? '\u2026' : ''}
+                            </span>
+                        )}
+                    </div>
+                )}
 
                 <a
                     href={productUrl}
@@ -154,6 +193,42 @@ export default function ProductCard({
                         />
                     </svg>
                 </a>
+
+                {/* Action row: Favorite + Write Message */}
+                <div className="flex items-center gap-1.5 mt-2">
+                    {onToggleFavorite && (
+                        <button
+                            onClick={(e) => {
+                                e.preventDefault();
+                                onToggleFavorite();
+                            }}
+                            className={`flex items-center gap-1 text-[10px] font-medium px-2.5 py-1.5 rounded-lg border transition-all ${
+                                isFavorited
+                                    ? 'bg-red-50 border-red-200 text-red-600'
+                                    : 'bg-gray-50 border-gray-200 text-gray-500 hover:border-red-200 hover:text-red-500'
+                            }`}
+                            title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                            aria-label={isFavorited ? 'Remove from favorites' : 'Save to favorites'}
+                        >
+                            <Heart size={10} fill={isFavorited ? 'currentColor' : 'none'} />
+                            {isFavorited ? 'Saved' : 'Save'}
+                        </button>
+                    )}
+                    {onWriteMessage && (
+                        <button
+                            onClick={(e) => {
+                                e.preventDefault();
+                                onWriteMessage();
+                            }}
+                            className="flex items-center gap-1 text-[10px] font-medium px-2.5 py-1.5 rounded-lg border bg-gray-50 border-gray-200 text-gray-500 hover:border-purple-200 hover:text-purple-500 hover:bg-purple-50 transition-all"
+                            title="Write a gift message for this product"
+                            aria-label="Write gift card message"
+                        >
+                            <MessageSquareHeart size={10} />
+                            Write Card
+                        </button>
+                    )}
+                </div>
             </div>
         </div>
     );
